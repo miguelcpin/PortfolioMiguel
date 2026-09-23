@@ -1,0 +1,16 @@
+{
+  "name": "resenha-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Servidor do Resenha: chat, presença e sinalização de voz/vídeo para até 10 pessoas",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}

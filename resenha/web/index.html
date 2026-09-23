@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Resenha</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="titlebar"><span>Resenha</span></div>
+
+  <!-- Login / cadastro -->
+  <div id="auth" class="auth-screen" hidden>
+    <form id="auth-form" class="auth-card" autocomplete="on">
+      <div class="auth-logo" data-icon="logo"></div>
+      <h1 id="auth-title">Boas-vindas de volta!</h1>
+      <p id="auth-sub" class="muted">Estamos muito animados em te ver novamente!</p>
+      <label class="field-label">Nome de usuário <span class="req">*</span></label>
+      <input class="input" name="username" autocomplete="username" required minlength="2" maxlength="32">
+      <label class="field-label">Senha <span class="req">*</span></label>
+      <input class="input" name="password" type="password" autocomplete="current-password" required minlength="6">
+      <div id="invite-row" hidden>
+        <label class="field-label">Código de convite <span class="req">*</span></label>
+        <input class="input" name="inviteCode" autocomplete="off">
+      </div>
+      <div id="auth-error" class="auth-error" hidden></div>
+      <button class="btn primary big" type="submit" id="auth-submit">Entrar</button>
+      <p class="auth-switch"><span id="auth-switch-text">Precisando de uma conta?</span> <a href="#" id="auth-switch">Registre-se</a></p>
+      <p class="auth-server muted" id="auth-server"></p>
+    </form>
+  </div>
+
+  <!-- App -->
+  <div id="app" hidden>
+    <nav id="guilds">
+      <div class="guild-item home" title="Resenha"><div class="guild-icon" data-icon="logo"></div></div>
+      <div class="guild-sep"></div>
+      <div class="guild-item active" id="guild-main"><span class="pill"></span><div class="guild-icon" id="guild-icon"></div></div>
+    </nav>
+
+    <aside id="sidebar">
+      <header id="server-header" tabindex="0"><span id="server-name"></span><span data-icon="chevron"></span></header>
+      <div id="channel-list" class="scroller thin"></div>
+      <div id="voice-panel" hidden></div>
+      <div id="user-panel"></div>
+    </aside>
+
+    <main id="main">
+      <header id="chat-header"></header>
+      <div id="content">
+        <section id="chat">
+          <div id="messages" class="scroller"></div>
+          <form id="composer">
+            <div id="composer-extra"></div>
+            <div class="composer-box">
+              <button type="button" class="composer-btn" id="attach-btn" title="Enviar arquivo" data-icon="plusCircle"></button>
+              <textarea id="composer-input" rows="1" maxlength="4000"></textarea>
+              <button type="button" class="composer-btn" id="emoji-btn" title="Emoji" data-icon="smile"></button>
+            </div>
+            <div id="typing"></div>
+            <input type="file" id="file-input" multiple hidden>
+            <div id="mention-popup" hidden></div>
+          </form>
+        </section>
+        <section id="voice-view" hidden></section>
+        <aside id="member-list" class="scroller thin"></aside>
+      </div>
+    </main>
+  </div>
+
+  <div id="drop-overlay" hidden><div><div data-icon="file"></div><h2>Enviar para #<span id="drop-channel"></span></h2><p>Solte os arquivos aqui.</p></div></div>
+
+  <script src="socket.io/socket.io.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
