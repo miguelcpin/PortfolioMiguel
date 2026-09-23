@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src http: https:; img-src 'self' file: data:">
+  <title>Resenha</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; height: 100vh; font-family: 'gg sans', 'Noto Sans', 'Segoe UI', Helvetica, Arial, sans-serif; color: #dbdee1; user-select: none;
+      background: radial-gradient(circle at 20% 20%, #5865f2 0, transparent 45%), radial-gradient(circle at 80% 80%, #eb459e 0, transparent 40%), #404eed; }
+    .drag { height: 22px; -webkit-app-region: drag; background: #1e1f22; color: #949ba4; font-size: 12px; font-weight: 700; padding: 4px 12px; }
+    body.mac .drag { padding-left: 80px; }
+    main { height: calc(100vh - 22px); display: flex; align-items: center; justify-content: center; }
+    form { width: 480px; max-width: calc(100vw - 32px); background: #313338; border-radius: 5px; padding: 32px; box-shadow: 0 2px 10px rgba(0,0,0,.2); }
+    img { display: block; width: 64px; height: 64px; margin: 0 auto 8px; }
+    h1 { margin: 0; text-align: center; color: #f2f3f5; font-size: 24px; font-weight: 600; }
+    p { text-align: center; color: #949ba4; margin: 8px 0 0; }
+    label { display: block; margin: 20px 0 8px; font-size: 12px; font-weight: 700; text-transform: uppercase; color: #b5bac1; }
+    input { width: 100%; height: 40px; padding: 10px; border: 0; outline: 0; border-radius: 3px; background: #1e1f22; color: #dbdee1; font-size: 16px; }
+    button { width: 100%; height: 44px; margin-top: 20px; border: 0; border-radius: 3px; background: #5865f2; color: #fff; font-size: 16px; font-weight: 500; cursor: pointer; }
+    button:hover { background: #4752c4; }
+    button:disabled { opacity: .6; cursor: default; }
+    .err { color: #fa777c; font-size: 14px; margin-top: 12px; text-align: left; }
+    .hint { font-size: 13px; text-align: left; }
+  </style>
+</head>
+<body>
+  <div class="drag">Resenha</div>
+  <main>
+    <form id="f">
+      <img src="build/icon.png" alt="">
+      <h1>Conectar a um servidor</h1>
+      <p>Cole o endereço que o dono do servidor te mandou.</p>
+      <label for="url">Endereço do servidor</label>
+      <input id="url" placeholder="https://resenha.exemplo.com ou 100.64.0.1:3000" autofocus spellcheck="false">
+      <div class="err" id="err" hidden></div>
+      <button id="go">Conectar</button>
+      <p class="hint">Dica: o endereço é aquele que aparece quando o dono roda o servidor (ex.: link do Cloudflare Tunnel, IP do Tailscale ou domínio próprio).</p>
+    </form>
+  </main>
+  <script>
+    if (window.desktop?.platform === 'darwin') document.body.classList.add('mac');
+    const q = new URLSearchParams(location.search);
+    const url = document.getElementById('url');
+    const err = document.getElementById('err');
+    const go = document.getElementById('go');
+    url.value = q.get('server') || '';
+    if (q.get('error')) { err.textContent = q.get('error'); err.hidden = false; }
+
+    document.getElementById('f').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      let v = url.value.trim();
+      if (!v) return;
+      if (!/^https?:\/\//i.test(v)) v = (/^(localhost|\d+\.\d+\.\d+\.\d+)(:\d+)?$/.test(v) ? 'http://' : 'https://') + v;
+      go.disabled = true; go.textContent = 'Conectando…'; err.hidden = true;
+      try {
+        const origin = new URL(v).origin;
+        const ctrl = new AbortController();
+        setTimeout(() => ctrl.abort(), 8000);
+        const res = await fetch(origin + '/api/health', { signal: ctrl.signal });
+        const info = await res.json();
+        if (info.app !== 'resenha') throw new Error('Esse endereço não é um servidor do Resenha.');
+        await window.desktop.setServer(origin);
+      } catch (ex) {
+        err.textContent = ex.name === 'AbortError' || ex.message === 'Failed to fetch'
+          ? 'Não foi possível conectar. Confira o endereço e se o servidor está ligado.'
+          : ex.message;
+        err.hidden = false;
+        go.disabled = false; go.textContent = 'Conectar';
+      }
+    });
+  </script>
+</body>
+</html>

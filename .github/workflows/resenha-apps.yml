@@ -1,0 +1,79 @@
+name: Resenha - instaladores
+
+# Gera os instaladores: Windows .exe, macOS .dmg, Linux .AppImage e Android .apk.
+# Rode manualmente em Actions > "Resenha - instaladores" > Run workflow,
+# ou crie uma tag resenha-v1.0.0 para gerar e publicar um Release.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['resenha-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: resenha/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npx electron-builder --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Resenha-${{ runner.os }}
+          path: |
+            resenha/desktop/dist/*.exe
+            resenha/desktop/dist/*.dmg
+            resenha/desktop/dist/*.AppImage
+          if-no-files-found: error
+
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: resenha/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+      - run: npm install --no-audit --no-fund
+      - run: npm run sync
+      - run: chmod +x android/gradlew && cd android && ./gradlew assembleDebug --no-daemon
+      # APK "debug" já vem assinado com chave de teste: instala direto no celular
+      - run: mkdir -p out && cp android/app/build/outputs/apk/debug/app-debug.apk out/Resenha.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Resenha-Android
+          path: resenha/mobile/out/Resenha.apk
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/resenha-v')
+    needs: [build, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
