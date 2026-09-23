@@ -35,6 +35,7 @@ export class VoiceClient extends EventTarget {
       pushToTalkKey: 'KeyV',
     };
     this.pttActive = false;
+    this.facingMode = 'user';
     this.audioCtx = null;
     this.meters = new Map(); // key -> { analyser, data }
     this.meterTimer = null;
@@ -224,14 +225,35 @@ export class VoiceClient extends EventTarget {
   }
 
   // ---------- câmera / tela ----------
+  cameraConstraints() {
+    return { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: this.facingMode };
+  }
+
   async startCamera() {
-    this.cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
-    });
+    this.cameraStream = await navigator.mediaDevices.getUserMedia({ video: this.cameraConstraints() });
     const track = this.cameraStream.getVideoTracks()[0];
     track.onended = () => this.stopCamera();
     for (const peer of this.peers.values()) this.addTrackTo(peer, track, this.cameraStream, CAMERA_BITRATE);
     this.socket.emit('voice:update', { cameraStreamId: this.cameraStream.id });
+    this.emit('change');
+  }
+
+  // Celular: alterna câmera frontal/traseira sem renegociar (replaceTrack)
+  async flipCamera() {
+    if (!this.cameraStream) return;
+    const old = this.cameraStream.getVideoTracks()[0];
+    this.facingMode = this.facingMode === 'user' ? 'environment' : 'user';
+    old.stop(); // alguns celulares não abrem duas câmeras ao mesmo tempo
+    const fresh = await navigator.mediaDevices.getUserMedia({ video: this.cameraConstraints() });
+    const track = fresh.getVideoTracks()[0];
+    track.onended = () => this.stopCamera();
+    for (const peer of this.peers.values()) {
+      const sender = peer.pc.getSenders().find((x) => x.track === old);
+      if (sender) await sender.replaceTrack(track);
+    }
+    // Mesmo MediaStream (mesmo id), para os outros continuarem achando a câmera
+    this.cameraStream.removeTrack(old);
+    this.cameraStream.addTrack(track);
     this.emit('change');
   }
 

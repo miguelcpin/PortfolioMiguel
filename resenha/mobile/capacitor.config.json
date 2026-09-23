@@ -1,0 +1,13 @@
+{
+  "appId": "app.resenha.mobile",
+  "appName": "Resenha",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true,
+    "backgroundColor": "#313338"
+  }
+}

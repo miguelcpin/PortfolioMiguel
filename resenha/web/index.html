@@ -2,7 +2,14 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#1e1f22">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Resenha">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <title>Resenha</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -19,8 +26,12 @@
       <div class="auth-logo" data-icon="logo"></div>
       <h1 id="auth-title">Boas-vindas de volta!</h1>
       <p id="auth-sub" class="muted">Estamos muito animados em te ver novamente!</p>
+      <div id="server-row" hidden>
+        <label class="field-label">Endereço do servidor <span class="req">*</span></label>
+        <input class="input" name="server" placeholder="https://resenha.exemplo.com" autocomplete="url" inputmode="url" spellcheck="false" autocapitalize="off">
+      </div>
       <label class="field-label">Nome de usuário <span class="req">*</span></label>
-      <input class="input" name="username" autocomplete="username" required minlength="2" maxlength="32">
+      <input class="input" name="username" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" required minlength="2" maxlength="32">
       <label class="field-label">Senha <span class="req">*</span></label>
       <input class="input" name="password" type="password" autocomplete="current-password" required minlength="6">
       <div id="invite-row" hidden>
@@ -60,6 +71,7 @@
               <button type="button" class="composer-btn" id="attach-btn" title="Enviar arquivo" data-icon="plusCircle"></button>
               <textarea id="composer-input" rows="1" maxlength="4000"></textarea>
               <button type="button" class="composer-btn" id="emoji-btn" title="Emoji" data-icon="smile"></button>
+              <button type="button" class="composer-btn" id="send-btn" title="Enviar" data-icon="send" hidden></button>
             </div>
             <div id="typing"></div>
             <input type="file" id="file-input" multiple hidden>
@@ -70,11 +82,12 @@
         <aside id="member-list" class="scroller thin"></aside>
       </div>
     </main>
+    <div id="scrim"></div>
   </div>
 
   <div id="drop-overlay" hidden><div><div data-icon="file"></div><h2>Enviar para #<span id="drop-channel"></span></h2><p>Solte os arquivos aqui.</p></div></div>
 
-  <script src="socket.io/socket.io.js"></script>
+  <script src="vendor/socket.io.min.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

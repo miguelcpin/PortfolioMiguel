@@ -1,0 +1,19 @@
+{
+  "name": "resenha-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "App Android do Resenha (Capacitor). A interface é a mesma da pasta web/, embutida no APK.",
+  "scripts": {
+    "copy-web": "node scripts/copy-web.js",
+    "sync": "npm run copy-web && cap sync android",
+    "apk": "npm run sync && cd android && ./gradlew assembleDebug",
+    "open": "cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/core": "^8.5.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.2"
+  }
+}

@@ -1,4 +1,5 @@
 import { icons } from './icons.js';
+import { abs } from './config.js';
 
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -49,7 +50,7 @@ export function initials(name) {
 // Avatar: imagem, ou letra inicial sobre a cor do usuário
 export function avatarHtml(user, size = 40, withStatus = false) {
   const inner = user?.avatar
-    ? `<img src="${escapeHtml(user.avatar)}" alt="">`
+    ? `<img src="${escapeHtml(abs(user.avatar))}" alt="">`
     : `<span style="font-size:${Math.round(size * 0.45)}px">${escapeHtml(initials(user?.username))}</span>`;
   const status = withStatus ? `<i class="status-dot ${statusClass(user)}"></i>` : '';
   return `<div class="avatar" style="width:${size}px;height:${size}px;background:${user?.avatar ? 'transparent' : escapeHtml(user?.color || '#5865f2')}">${inner}${status}</div>`;
@@ -61,6 +62,51 @@ export function statusClass(user) {
 }
 
 export const STATUS_LABEL = { online: 'Disponível', idle: 'Ausente', dnd: 'Não perturbe', invisible: 'Invisível', offline: 'Offline' };
+
+// ---------- toque ----------
+export const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+const mobileQuery = matchMedia('(max-width: 768px)');
+export const isMobile = () => mobileQuery.matches;
+
+// Segurar o dedo = botão direito
+export function longPress(el, handler, ms = 450) {
+  let timer = 0;
+  let start = null;
+  let fired = false;
+  el.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    start = { x: t.clientX, y: t.clientY };
+    fired = false;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      fired = true;
+      navigator.vibrate?.(15);
+      handler({ clientX: start.x, clientY: start.y, target: e.target, currentTarget: el, preventDefault() {}, stopPropagation() {} });
+    }, ms);
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    const t = e.touches[0];
+    if (start && Math.hypot(t.clientX - start.x, t.clientY - start.y) > 10) clearTimeout(timer);
+  }, { passive: true });
+  el.addEventListener('touchend', (e) => {
+    clearTimeout(timer);
+    if (fired) {
+      e.preventDefault(); // não gera clique depois do toque longo
+      e.stopPropagation();
+    }
+  });
+  el.addEventListener('touchcancel', () => clearTimeout(timer));
+}
+
+// Menu de contexto por botão direito (desktop) ou toque longo (celular)
+export function bindMenu(el, handler) {
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    if (!isTouch) handler(e);
+  });
+  if (isTouch) longPress(el, handler);
+}
 
 // ---------- toasts ----------
 export function toast(text, kind = 'info') {

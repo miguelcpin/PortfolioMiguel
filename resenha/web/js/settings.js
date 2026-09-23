@@ -1,10 +1,11 @@
 import { icons } from './icons.js';
 import { $, $$, h, escapeHtml, avatarHtml, toast, confirmDialog } from './util.js';
+import { abs, serverLabel } from './config.js';
 
 const COLORS = ['#5865f2', '#57f287', '#fee75c', '#eb459e', '#ed4245', '#f0b232', '#23a55a', '#00a8fc', '#9b59b6', '#e67e22', '#1abc9c', '#95a5a6'];
 
 function upload(file, token) {
-  return fetch('api/upload', {
+  return fetch(abs('api/upload'), {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'X-Filename': encodeURIComponent(file.name), 'Content-Type': file.type || 'application/octet-stream' },
     body: file,
@@ -61,6 +62,14 @@ export function openSettings(ctx, section = 'account') {
   };
   $$('.sn-item', el).forEach((b) => b.addEventListener('click', () => show(b.dataset.s)));
   show(section);
+}
+
+function installHtml(ctx) {
+  if (ctx.desktop || ctx.isNative) return '';
+  if (ctx.isStandalone()) return '<h3>Instalar</h3><p class="muted" style="font-size:14px">✅ O Resenha já está instalado como app neste dispositivo.</p>';
+  if (ctx.canInstall()) return '<h3>Instalar</h3><p class="muted" style="font-size:14px">Instale como app: abre em janela própria, com ícone na tela inicial / menu iniciar.</p><button class="btn primary" id="install-btn">Instalar o Resenha</button>';
+  if (ctx.isIos()) return '<h3>Instalar no iPhone/iPad</h3><p class="muted" style="font-size:14px">No Safari, toque em <b>Compartilhar</b> e depois em <b>Adicionar à Tela de Início</b>. As notificações só funcionam com o app instalado assim (iOS 16.4 ou mais novo).</p>';
+  return '<h3>Instalar</h3><p class="muted" style="font-size:14px">Use o menu do navegador (⋮) e escolha <b>Instalar app</b> ou <b>Adicionar à tela inicial</b>.</p>';
 }
 
 const SECTIONS = {
@@ -257,7 +266,12 @@ const SECTIONS = {
       <span class="kbd">↑</span> editar última mensagem · <span class="kbd">Shift</span> + <span class="kbd">Enter</span> nova linha</p>
       <h3>Formatação</h3>
       <p class="muted" style="font-size:14px">**negrito** · *itálico* · __sublinhado__ · ~~riscado~~ · ||spoiler|| · \`código\` · \`\`\`bloco\`\`\` · &gt; citação · @nome</p>
-      ${desktop ? `<h3>Servidor</h3><p class="muted" style="font-size:14px">Conectado a <b>${escapeHtml(location.origin)}</b></p><button class="btn secondary" id="chg-srv">Trocar servidor</button>` : ''}`;
+      ${installHtml(ctx)}
+      ${desktop || ctx.isNative ? `<h3>Servidor</h3><p class="muted" style="font-size:14px">Conectado a <b>${escapeHtml(serverLabel())}</b></p><button class="btn secondary" id="chg-srv">Trocar servidor</button>` : ''}`;
+    $('#install-btn', body)?.addEventListener('click', async () => {
+      await ctx.installApp();
+      SECTIONS.app(body, ctx);
+    });
     $('#pn', body).addEventListener('change', (e) => {
       S.prefs.notifications = e.target.checked;
       if (e.target.checked && 'Notification' in window) Notification.requestPermission();
@@ -267,7 +281,11 @@ const SECTIONS = {
       S.prefs.sounds = e.target.checked;
       ctx.savePrefs();
     });
-    $('#chg-srv', body)?.addEventListener('click', () => desktop.changeServer());
+    $('#chg-srv', body)?.addEventListener('click', () => {
+      if (desktop) return desktop.changeServer();
+      // App Android: sai da conta e volta para a tela onde se digita o servidor
+      ctx.logout();
+    });
   },
 
   server(body, ctx) {
@@ -275,7 +293,7 @@ const SECTIONS = {
     const draw = () => {
       body.innerHTML = `<h2>Visão geral do servidor</h2>
         <div class="row" style="align-items:flex-start;gap:24px">
-          <div class="guild-icon" style="width:100px;height:100px;border-radius:50%;font-size:32px;background:var(--brand);color:#fff;cursor:default">${S.serverIcon ? `<img src="${escapeHtml(S.serverIcon)}" alt="">` : escapeHtml(S.serverName.slice(0, 2))}</div>
+          <div class="guild-icon" style="width:100px;height:100px;border-radius:50%;font-size:32px;background:var(--brand);color:#fff;cursor:default">${S.serverIcon ? `<img src="${escapeHtml(abs(S.serverIcon))}" alt="">` : escapeHtml(S.serverName.slice(0, 2))}</div>
           <div style="flex:1">
             <h3 style="margin-top:0">Nome do servidor</h3>
             <input class="input" id="srv-name" value="${escapeHtml(S.serverName)}" maxlength="50">
@@ -288,7 +306,7 @@ const SECTIONS = {
           </div>
         </div>
         <h3>Convidar amigos</h3>
-        <p class="muted" style="font-size:14px">Mande para cada amigo: (1) o instalador do app, (2) o endereço <b>${escapeHtml(location.origin)}</b> e (3) o código de convite que você definiu em <code>INVITE_CODE</code> no servidor. Vagas usadas: ${S.users.size}.</p>`;
+        <p class="muted" style="font-size:14px">Mande para cada amigo: (1) o instalador do app, (2) o endereço <b>${escapeHtml(serverLabel())}</b> e (3) o código de convite que você definiu em <code>INVITE_CODE</code> no servidor. Vagas usadas: ${S.users.size}.</p>`;
       $('#srv-save', body).addEventListener('click', async () => {
         const res = await ctx.emitAck('server:update', { name: $('#srv-name', body).value });
         res.error ? toast(res.error, 'error') : toast('Salvo!', 'success');

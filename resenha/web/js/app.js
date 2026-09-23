@@ -2,10 +2,12 @@ import { icons } from './icons.js';
 import {
   $, $$, h, escapeHtml, avatarHtml, statusClass, STATUS_LABEL, formatTime, formatTimestamp, formatDay, formatSize,
   toast, openModal, askText, confirmDialog, contextMenu, closeContextMenu, playBlip, storage,
+  isTouch, isMobile, bindMenu,
 } from './util.js';
 import { renderMarkdown, mentionsUser, isEmojiOnly } from './markdown.js';
 import { VoiceClient } from './voice.js';
 import { openSettings } from './settings.js';
+import { isNative, abs, serverBase, setServerBase, serverLabel } from './config.js';
 
 const desktop = window.desktop || null;
 if (desktop) {
@@ -58,18 +60,48 @@ let authMode = 'login';
 async function showAuth() {
   $('#app').hidden = true;
   $('#auth').hidden = false;
-  $('#auth-server').textContent = desktop ? `Servidor: ${location.host}` : '';
+  // No app Android a interface vem embutida: o usuário informa o servidor aqui
+  $('#server-row').hidden = !isNative;
+  if (isNative) $('#auth-form').server.value = serverBase();
+  $('#auth-server').textContent = '';
+  await refreshHealth();
+  setAuthMode(authMode);
+}
+
+async function refreshHealth() {
+  if (isNative && !serverBase()) return;
   try {
-    const info = await (await fetch('api/health')).json();
+    const info = await (await fetch(abs('api/health'))).json();
     S.health = info;
     if (info.users === 0) setAuthMode('register');
-    if (desktop) $('#auth-server').innerHTML = `Servidor: <b>${escapeHtml(info.serverName)}</b> (${escapeHtml(location.host)}) · ${info.users}/${info.maxUsers} pessoas · <a href="#" id="change-server">trocar servidor</a>`;
+    if (desktop || isNative) {
+      $('#auth-server').innerHTML = `Servidor: <b>${escapeHtml(info.serverName)}</b> (${escapeHtml(serverLabel().replace(/^https?:\/\//, ''))}) · ${info.users}/${info.maxUsers} pessoas${desktop ? ' · <a href="#" id="change-server">trocar servidor</a>' : ''}`;
+    }
     $('#change-server')?.addEventListener('click', (e) => {
       e.preventDefault();
       desktop.changeServer();
     });
   } catch {}
-  setAuthMode(authMode);
+}
+
+// Normaliza e testa o endereço digitado (só no app nativo)
+async function checkServer(raw) {
+  let v = raw.trim().replace(/\/+$/, '');
+  if (!v) throw new Error('Informe o endereço do servidor.');
+  if (!/^https?:\/\//i.test(v)) v = (/^(localhost|\d+\.\d+\.\d+\.\d+)(:\d+)?$/.test(v) ? 'http://' : 'https://') + v;
+  const origin = new URL(v).origin;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const info = await (await fetch(origin + '/api/health', { signal: ctrl.signal })).json();
+    if (info.app !== 'resenha') throw new Error('Esse endereço não é um servidor do Resenha.');
+    return { origin, info };
+  } catch (e) {
+    if (e.message.includes('Resenha')) throw e;
+    throw new Error('Não foi possível conectar. Confira o endereço e se o servidor está ligado.');
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function setAuthMode(mode) {
@@ -96,7 +128,19 @@ $('#auth-form').addEventListener('submit', async (e) => {
   const body = { username: f.username.value.trim(), password: f.password.value, inviteCode: f.inviteCode.value.trim() };
   $('#auth-submit').disabled = true;
   try {
-    const res = await fetch(authMode === 'login' ? 'api/login' : 'api/register', {
+    if (isNative && f.server.value.trim() !== serverBase()) {
+      const { origin, info } = await checkServer(f.server.value);
+      setServerBase(origin);
+      S.health = info;
+      f.server.value = origin;
+      // Servidor novo sem ninguém: vira cadastro e mostra o campo de convite
+      if (authMode === 'login' && info.users === 0) {
+        setAuthMode('register');
+        return;
+      }
+      $('#invite-row').hidden = !(authMode === 'register' && info.needsInvite);
+    }
+    const res = await fetch(abs(authMode === 'login' ? 'api/login' : 'api/register'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -117,7 +161,7 @@ $('#auth-form').addEventListener('submit', async (e) => {
 
 export async function logout() {
   try {
-    await fetch('api/logout', { method: 'POST', headers: { Authorization: `Bearer ${S.token}` } });
+    await fetch(abs('api/logout'), { method: 'POST', headers: { Authorization: `Bearer ${S.token}` } });
   } catch {}
   voice?.leave();
   socket?.disconnect();
@@ -132,7 +176,7 @@ export async function logout() {
 // Conexão
 // ======================================================================
 function connect() {
-  socket = window.io({ auth: { token: S.token }, transports: ['websocket', 'polling'] });
+  socket = window.io(serverBase() || undefined, { auth: { token: S.token }, transports: ['websocket', 'polling'] });
   voice = new VoiceClient(socket);
   Object.assign(voice.settings, storage.get('voiceSettings', {}));
   voice.userVolumes = new Map(Object.entries(storage.get('userVolumes', {})));
@@ -342,7 +386,7 @@ function renderAll() {
 function renderGuilds() {
   const icon = $('#guild-icon');
   icon.innerHTML = S.serverIcon
-    ? `<img src="${escapeHtml(S.serverIcon)}" alt="">`
+    ? `<img src="${escapeHtml(abs(S.serverIcon))}" alt="">`
     : escapeHtml(S.serverName.split(/\s+/).map((w) => w[0]).join('').slice(0, 3));
   icon.title = S.serverName;
   $('#server-name').textContent = S.serverName;
@@ -415,8 +459,11 @@ function renderChannels() {
       ${icons.hash}<span class="name">${escapeHtml(c.name)}</span>
       ${S.mentions[c.id] ? `<span class="badge">${S.mentions[c.id]}</span>` : ''}
     </div>`);
-    el.addEventListener('click', () => openChannel(c.id));
-    el.addEventListener('contextmenu', (e) => channelMenu(e, c));
+    el.addEventListener('click', () => {
+      openChannel(c.id);
+      showMain();
+    });
+    bindMenu(el, (e) => channelMenu(e, c));
     list.append(el);
   }
 
@@ -426,8 +473,11 @@ function renderChannels() {
     const active = S.view === 'voice' && S.voiceViewChannel === c.id;
     if (!showVoice && !members.length && voice?.channelId !== c.id) continue;
     const el = h(`<div class="channel ${active ? 'active' : ''}" data-id="${c.id}">${icons.speaker}<span class="name">${escapeHtml(c.name)}</span></div>`);
-    el.addEventListener('click', () => joinVoice(c.id));
-    el.addEventListener('contextmenu', (e) => channelMenu(e, c));
+    el.addEventListener('click', () => {
+      joinVoice(c.id);
+      showMain();
+    });
+    bindMenu(el, (e) => channelMenu(e, c));
     list.append(el);
     if (members.length) {
       const wrap = h('<div class="voice-members"></div>');
@@ -444,7 +494,7 @@ function renderChannels() {
           </span>
         </div>`);
         row.addEventListener('click', (e) => showProfile(u, e));
-        row.addEventListener('contextmenu', (e) => userMenu(e, u));
+        bindMenu(row, (e) => userMenu(e, u));
         wrap.append(row);
       }
       list.append(wrap);
@@ -522,12 +572,15 @@ function renderVoicePanel() {
     </div>
     <div class="vp-buttons">
       <button id="vp-cam" class="${voice.cameraStream ? 'on' : ''}" title="${voice.cameraStream ? 'Desligar câmera' : 'Ligar câmera'}">${icons.video}</button>
-      <button id="vp-screen" class="${voice.screenStream ? 'on' : ''}" title="${voice.screenStream ? 'Parar transmissão' : 'Compartilhar tela'}">${icons.screen}</button>
+      ${canShareScreen ? `<button id="vp-screen" class="${voice.screenStream ? 'on' : ''}" title="${voice.screenStream ? 'Parar transmissão' : 'Compartilhar tela'}">${icons.screen}</button>` : ''}
     </div>`;
   $('#vp-hang').addEventListener('click', leaveVoice);
-  $('.vp-channel', p).addEventListener('click', () => openVoiceView(voice.channelId));
+  $('.vp-channel', p).addEventListener('click', () => {
+    openVoiceView(voice.channelId);
+    showMain();
+  });
   $('#vp-cam').addEventListener('click', toggleCamera);
-  $('#vp-screen').addEventListener('click', toggleScreen);
+  $('#vp-screen')?.addEventListener('click', toggleScreen);
 }
 
 function renderUserPanel() {
@@ -728,7 +781,7 @@ function renderVoiceView() {
     const u = user(m.userId);
     const mine = m.socketId === socket.id;
     const cam = mine ? voice.cameraStream : voice.remoteStream(m.socketId, m.cameraStreamId);
-    tiles.push({ key: `${m.socketId}:cam`, m, u, stream: cam, mirror: mine, label: u.username });
+    tiles.push({ key: `${m.socketId}:cam`, m, u, stream: cam, mirror: mine && voice.facingMode === 'user', label: u.username });
     if (m.screenStreamId) {
       const scr = mine ? voice.screenStream : voice.remoteStream(m.socketId, m.screenStreamId);
       tiles.push({ key: `${m.socketId}:screen`, m, u, stream: scr, screen: true, label: `${u.username} (tela)` });
@@ -738,7 +791,11 @@ function renderVoiceView() {
   const focused = tiles.find((t) => t.key === S.focusTile);
   const main = focused ? [focused] : tiles;
   const rest = focused ? tiles.filter((t) => t !== focused) : [];
-  const cols = main.length <= 1 ? 1 : main.length <= 4 ? 2 : main.length <= 9 ? 3 : 4;
+  const portrait = (view.clientHeight || 600) > (view.clientWidth || 800) * 1.2;
+  // Celular em pé: vídeos empilhados em vez de lado a lado
+  const cols = portrait
+    ? (main.length <= 3 ? 1 : 2)
+    : main.length <= 1 ? 1 : main.length <= 4 ? 2 : main.length <= 9 ? 3 : 4;
 
   const tileEl = (t) => {
     const connState = t.m.socketId === socket.id ? 'connected' : voice.connectionState(t.m.socketId);
@@ -759,7 +816,7 @@ function renderVoiceView() {
       S.focusTile = S.focusTile === t.key ? null : t.key;
       renderVoiceView();
     });
-    el.addEventListener('contextmenu', (e) => userMenu(e, t.u));
+    bindMenu(el, (e) => userMenu(e, t.u));
     return el;
   };
 
@@ -775,7 +832,8 @@ function renderVoiceView() {
 
   const controls = h(`<div class="vv-controls">
     <button id="vv-cam" class="${voice.cameraStream ? 'on' : ''}" title="Câmera">${icons.video}</button>
-    <button id="vv-screen" class="${voice.screenStream ? 'on' : ''}" title="Compartilhar tela">${icons.screen}</button>
+    ${voice.cameraStream && isTouch ? `<button id="vv-flip" title="Trocar câmera">${icons.flip}</button>` : ''}
+    ${canShareScreen ? `<button id="vv-screen" class="${voice.screenStream ? 'on' : ''}" title="Compartilhar tela">${icons.screen}</button>` : ''}
     <button id="vv-mute" class="${voice.muted || voice.deafened ? 'muted' : ''}" title="Microfone">${voice.muted || voice.deafened ? icons.micOff : icons.mic}</button>
     <button id="vv-deaf" class="${voice.deafened ? 'muted' : ''}" title="Áudio">${voice.deafened ? icons.headphonesOff : icons.headphones}</button>
     <button id="vv-hang" class="hang" title="Desconectar">${icons.hangup}</button>
@@ -791,7 +849,8 @@ function renderVoiceView() {
   }
   view.append(controls);
   $('#vv-cam').addEventListener('click', toggleCamera);
-  $('#vv-screen').addEventListener('click', toggleScreen);
+  $('#vv-screen')?.addEventListener('click', toggleScreen);
+  $('#vv-flip')?.addEventListener('click', () => voice.flipCamera().catch(() => toast('Não foi possível trocar a câmera.', 'error')));
   $('#vv-mute').addEventListener('click', toggleMute);
   $('#vv-deaf').addEventListener('click', toggleDeafen);
   $('#vv-hang').addEventListener('click', leaveVoice);
@@ -822,13 +881,16 @@ function renderHeader() {
   const head = $('#chat-header');
   if (S.view === 'voice') {
     const c = getChannel(S.voiceViewChannel);
-    head.innerHTML = `${icons.speaker}<span class="ch-title">${escapeHtml(c?.name || '')}</span><span class="spacer"></span>`;
+    head.innerHTML = `${navButton()}${icons.speaker}<span class="ch-title">${escapeHtml(c?.name || '')}</span><span class="spacer"></span>`;
+    bindNavButton();
     return;
   }
   const c = getChannel(S.current);
-  head.innerHTML = `${icons.hash}<span class="ch-title">${escapeHtml(c?.name || '')}</span><span class="spacer"></span>
+  head.innerHTML = `${navButton()}${icons.hash}<span class="ch-title">${escapeHtml(c?.name || '')}</span><span class="spacer"></span>
     <button class="icon-btn ${S.prefs.showMembers ? 'on' : ''}" id="toggle-members" title="Lista de membros">${icons.members}</button>`;
+  bindNavButton();
   $('#toggle-members').addEventListener('click', () => {
+    if (isMobile()) return setMembersDrawer(true);
     toggleMembers();
     renderHeader();
   });
@@ -957,12 +1019,12 @@ function messageEl(msg, prev) {
     ${mine || S.me.isAdmin ? `<button data-act="delete" class="danger" title="Excluir">${icons.trash}</button>` : ''}
   </div>`;
   el.innerHTML = html;
-  el.addEventListener('contextmenu', (e) => messageMenu(e, msg));
+  bindMenu(el, (e) => messageMenu(e, msg));
   return el;
 }
 
 function attachmentHtml(a) {
-  const url = escapeHtml(a.url);
+  const url = escapeHtml(abs(a.url));
   if (a.type.startsWith('image/')) return `<img class="att-image" src="${url}" alt="${escapeHtml(a.name)}" loading="lazy" data-full="${url}">`;
   if (a.type.startsWith('video/')) return `<video class="att-video" src="${url}" controls preload="metadata"></video>`;
   const audio = a.type.startsWith('audio/') ? `<audio src="${url}" controls preload="none"></audio>` : '';
@@ -1132,16 +1194,25 @@ function notify(msg, mentioned) {
   if (document.hasFocus() && !mentioned) return;
   const u = user(msg.authorId);
   const c = getChannel(msg.channelId);
-  const n = new Notification(`${u.username} (#${c?.name})`, {
+  const title = `${u.username} (#${c?.name})`;
+  const opts = {
     body: msg.content || (msg.attachments.length ? `📎 ${msg.attachments[0].name}` : ''),
     silent: true,
     tag: msg.channelId,
-  });
-  n.onclick = () => {
-    window.focus();
-    desktop?.focus?.();
-    openChannel(msg.channelId);
+    icon: 'icons/icon-192.png',
+    data: { channelId: msg.channelId },
   };
+  // Android/PWA só aceitam notificação pelo service worker
+  if (swRegistration) return swRegistration.showNotification(title, opts).catch(() => {});
+  try {
+    const n = new Notification(title, opts);
+    n.onclick = () => {
+      window.focus();
+      desktop?.focus?.();
+      openChannel(msg.channelId);
+      showMain();
+    };
+  } catch {}
 }
 
 window.addEventListener('focus', () => S.view === 'text' && isNearBottom() && markRead(S.current));
@@ -1188,7 +1259,7 @@ input.addEventListener('input', () => {
 
 input.addEventListener('keydown', (e) => {
   if (mentionKeydown(e)) return;
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !isTouch) {
     e.preventDefault();
     sendMessage();
   } else if (e.key === 'Escape') {
@@ -1286,7 +1357,7 @@ function queueUpload(file) {
   renderComposerExtra();
   const xhr = new XMLHttpRequest();
   p.xhr = xhr;
-  xhr.open('POST', 'api/upload');
+  xhr.open('POST', abs('api/upload'));
   xhr.setRequestHeader('Authorization', `Bearer ${S.token}`);
   xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
   xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
@@ -1443,7 +1514,7 @@ function renderMembers() {
         <div class="m-text"><div class="m-name" style="${u.isAdmin ? `color:${escapeHtml(u.color)}` : ''}">${escapeHtml(u.username)}</div>${sub ? `<div class="m-sub">${escapeHtml(sub)}</div>` : ''}</div>
       </div>`);
       el.addEventListener('click', (e) => showProfile(u, e));
-      el.addEventListener('contextmenu', (e) => userMenu(e, u));
+      bindMenu(el, (e) => userMenu(e, u));
       box.append(el);
     }
   };
@@ -1509,11 +1580,149 @@ function isTypingTarget(t) {
 }
 
 // ======================================================================
+// Celular: um painel por vez (canais <-> conversa), membros em gaveta
+// ======================================================================
+const canShareScreen = !!navigator.mediaDevices?.getDisplayMedia && !isTouch;
+
+function navButton() {
+  return `<button class="icon-btn mobile-only" id="nav-btn" title="Canais">${icons.menu}</button>`;
+}
+
+function bindNavButton() {
+  $('#nav-btn')?.addEventListener('click', () => (history.state?.r === 'main' ? history.back() : showNav()));
+}
+
+function showMain() {
+  if (!isMobile()) return;
+  setMembersDrawer(false);
+  if (!$('#app').classList.contains('nav-open')) return;
+  $('#app').classList.remove('nav-open');
+  // Botão/gesto "voltar" do celular volta para a lista de canais
+  history.pushState({ r: 'main' }, '');
+}
+
+function showNav() {
+  setMembersDrawer(false);
+  $('#app').classList.add('nav-open');
+}
+
+function setMembersDrawer(open) {
+  document.body.classList.toggle('members-open', open);
+}
+
+function setupMobile() {
+  if (isMobile()) $('#app').classList.add('nav-open');
+  window.addEventListener('popstate', () => {
+    if (!isMobile()) return;
+    if (document.body.classList.contains('members-open')) {
+      setMembersDrawer(false);
+      history.pushState({ r: 'main' }, '');
+      return;
+    }
+    showNav();
+  });
+  $('#scrim').addEventListener('click', () => setMembersDrawer(false));
+  if (isTouch) {
+    document.body.classList.add('touch');
+    $('#send-btn').hidden = false;
+    $('#send-btn').addEventListener('click', () => {
+      sendMessage();
+      input.focus();
+    });
+  }
+  // Deslizar para os lados, igual ao Discord no celular
+  let sx = 0;
+  let sy = 0;
+  let tracking = false;
+  document.addEventListener('touchstart', (e) => {
+    tracking = isMobile() && e.touches.length === 1 && !e.target.closest('.modal-layer, .settings, .context-menu, .popout, pre, video, input[type=range]');
+    if (!tracking) return;
+    sx = e.touches[0].clientX;
+    sy = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchend', (e) => {
+    if (!tracking) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - sx;
+    const dy = t.clientY - sy;
+    if (Math.abs(dx) < 70 || Math.abs(dy) > Math.abs(dx) * 0.6) return;
+    const navOpen = $('#app').classList.contains('nav-open');
+    const membersOpen = document.body.classList.contains('members-open');
+    if (dx > 0) {
+      if (membersOpen) setMembersDrawer(false);
+      else if (!navOpen) history.state?.r === 'main' ? history.back() : showNav();
+    } else if (navOpen) showMain();
+    else if (S.view === 'text' && !membersOpen) setMembersDrawer(true);
+  }, { passive: true });
+}
+
+// ======================================================================
+// PWA: instalar pelo navegador (celular e PC) + notificações
+// ======================================================================
+let swRegistration = null;
+let installPrompt = null;
+
+function setupPwa() {
+  if (!isNative && !desktop && 'serviceWorker' in navigator && window.isSecureContext) {
+    navigator.serviceWorker.register('sw.js').then((reg) => (swRegistration = reg)).catch((e) => console.warn('[pwa]', e));
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data?.type === 'open-channel' && getChannel(e.data.channelId)) {
+        openChannel(e.data.channelId);
+        showMain();
+      }
+    });
+  }
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    installPrompt = e;
+    maybeShowInstallBanner();
+  });
+  window.addEventListener('appinstalled', () => {
+    installPrompt = null;
+    $('.install-banner')?.remove();
+  });
+  // iPhone não tem prompt: mostra instrução
+  if (isIos() && !isStandalone()) setTimeout(maybeShowInstallBanner, 3000);
+}
+
+export const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+export const isIos = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+function maybeShowInstallBanner() {
+  if ($('.install-banner') || storage.get('installDismissed', false) || isStandalone() || desktop || isNative) return;
+  if (!installPrompt && !isIos()) return;
+  const banner = h(`<div class="install-banner">
+    ${icons.install}
+    <span>${installPrompt ? 'Instale o Resenha neste dispositivo para usar como app.' : 'Para instalar: toque em <b>Compartilhar</b> e depois em <b>Adicionar à Tela de Início</b>.'}</span>
+    ${installPrompt ? '<button class="btn primary" data-install>Instalar</button>' : ''}
+    <button class="icon-btn" data-dismiss title="Fechar">${icons.close}</button>
+  </div>`);
+  $('[data-install]', banner)?.addEventListener('click', installApp);
+  $('[data-dismiss]', banner).addEventListener('click', () => {
+    storage.set('installDismissed', true);
+    banner.remove();
+  });
+  $('#main').prepend(banner);
+}
+
+export async function installApp() {
+  if (!installPrompt) return false;
+  installPrompt.prompt();
+  const { outcome } = await installPrompt.userChoice;
+  if (outcome === 'accepted') {
+    installPrompt = null;
+    $('.install-banner')?.remove();
+  }
+  return true;
+}
+
+// ======================================================================
 // Contexto para o módulo de configurações
 // ======================================================================
 function ctx() {
   return {
     S, socket, voice, desktop, emitAck, logout, kickUser, user,
+    isNative, installApp, canInstall: () => !!installPrompt, isIos, isStandalone,
     saveVoiceSettings: () => storage.set('voiceSettings', voice.settings),
     savePrefs: () => storage.set('prefs', S.prefs),
     rerender: renderAll,
@@ -1523,5 +1732,7 @@ function ctx() {
 // ======================================================================
 // Início
 // ======================================================================
-if (S.token) connect();
+setupMobile();
+setupPwa();
+if (S.token && (!isNative || serverBase())) connect();
 else showAuth();
