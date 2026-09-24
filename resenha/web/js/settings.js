@@ -1,6 +1,12 @@
 import { icons } from './icons.js';
 import { $, $$, h, escapeHtml, avatarHtml, toast, confirmDialog } from './util.js';
 import { abs, serverLabel } from './config.js';
+import { buildMicChain, noiseMode } from './mic-processing.js';
+
+// Escala do medidor de sensibilidade do noise gate, em dB
+const GATE_MIN_DB = -90;
+const GATE_MAX_DB = -10;
+const gatePct = (db) => Math.max(0, Math.min(100, ((db - GATE_MIN_DB) / (GATE_MAX_DB - GATE_MIN_DB)) * 100));
 
 const COLORS = ['#5865f2', '#57f287', '#fee75c', '#eb459e', '#ed4245', '#f0b232', '#23a55a', '#00a8fc', '#9b59b6', '#e67e22', '#1abc9c', '#95a5a6'];
 
@@ -143,7 +149,18 @@ const SECTIONS = {
       <div class="switch-row" id="ptt-row" ${s.pushToTalk ? '' : 'hidden'}><div class="sr-text"><b>Tecla</b><small>Clique no botão e aperte a tecla desejada.</small></div><button class="btn secondary" id="ptt-key"><span class="kbd">${escapeHtml(s.pushToTalkKey.replace(/^Key|^Digit/, ''))}</span></button></div>
 
       <h3>Processamento de voz</h3>
-      <div class="switch-row"><div class="sr-text"><b>Supressão de ruído</b><small>Remove barulho de fundo (ventilador, teclado).</small></div><label class="switch"><input type="checkbox" id="ns" ${s.noiseSuppression ? 'checked' : ''}><span></span></label></div>
+      <div class="switch-row"><div class="sr-text"><b>Supressão de ruído</b><small>Remove barulho de fundo (teclado, mouse, ventilador). A IA (RNNoise) é bem mais forte que a do navegador.</small></div>
+        <select class="input" id="ns" style="width:auto">
+          <option value="ai" ${noiseMode(s) === 'ai' ? 'selected' : ''}>IA (RNNoise)</option>
+          <option value="browser" ${noiseMode(s) === 'browser' ? 'selected' : ''}>Do navegador</option>
+          <option value="off" ${noiseMode(s) === 'off' ? 'selected' : ''}>Desligada</option>
+        </select></div>
+      <div class="switch-row"><div class="sr-text"><b>Sensibilidade do microfone (noise gate)</b><small>Corta o microfone quando o som fica abaixo da linha branca. Use "Vamos checar", fique em silêncio mexendo no teclado e deixe a linha um pouco acima da barra.</small></div><label class="switch"><input type="checkbox" id="gate" ${s.noiseGate ? 'checked' : ''}><span></span></label></div>
+      <div id="gate-row" ${s.noiseGate ? '' : 'hidden'}>
+        <div class="meter gate-meter"><i id="gate-level"></i><b id="gate-mark" style="left:${gatePct(s.gateThreshold)}%"></b></div>
+        <input type="range" id="gate-th" min="${GATE_MIN_DB}" max="${GATE_MAX_DB}" step="1" value="${s.gateThreshold}">
+        <small class="muted" id="gate-db">${s.gateThreshold} dB</small>
+      </div>
       <div class="switch-row"><div class="sr-text"><b>Cancelamento de eco</b><small>Evita que os outros ouçam a própria voz se você usa caixa de som.</small></div><label class="switch"><input type="checkbox" id="ec" ${s.echoCancellation ? 'checked' : ''}><span></span></label></div>
       <div class="switch-row"><div class="sr-text"><b>Controle automático de ganho</b><small>Ajusta o volume do microfone automaticamente.</small></div><label class="switch"><input type="checkbox" id="agc" ${s.autoGainControl ? 'checked' : ''}><span></span></label></div>
       <p class="muted" style="font-size:14px;margin-top:16px">Qualidade de áudio: Opus 128 kbps (o Discord grátis usa 64 kbps). Tela: até 1080p/60fps sem precisar de Nitro.</p>`;
@@ -179,7 +196,27 @@ const SECTIONS = {
       if (testGain) testGain.gain.value = e.target.value / 100;
       persist();
     });
-    for (const [id, key] of [['ns', 'noiseSuppression'], ['ec', 'echoCancellation'], ['agc', 'autoGainControl']]) {
+    $('#ns', body).addEventListener('change', (e) => {
+      s.noiseSuppression = e.target.value;
+      persist();
+      restart();
+      if (test) startTest(); // para ouvir a diferença na hora
+    });
+    $('#gate', body).addEventListener('change', (e) => {
+      voice.setNoiseGate(e.target.checked);
+      testChain?.setGate(s.noiseGate, s.gateThreshold);
+      $('#gate-row', body).hidden = !s.noiseGate;
+      persist();
+    });
+    $('#gate-th', body).addEventListener('input', (e) => {
+      const db = Number(e.target.value);
+      voice.setNoiseGate(s.noiseGate, db);
+      testChain?.setGate(s.noiseGate, db);
+      $('#gate-mark', body).style.left = gatePct(db) + '%';
+      $('#gate-db', body).textContent = db + ' dB';
+      persist();
+    });
+    for (const [id, key] of [['ec', 'echoCancellation'], ['agc', 'autoGainControl']]) {
       $('#' + id, body).addEventListener('change', (e) => {
         s[key] = e.target.checked;
         persist();
@@ -209,16 +246,22 @@ const SECTIONS = {
     // Teste de microfone independente da chamada
     let test = null;
     let testGain = null;
+    let testChain = null;
     let raf = 0;
     let audioCtx = null;
     const stopTest = () => {
       cancelAnimationFrame(raf);
       test?.getTracks().forEach((t) => t.stop());
       test = null;
+      testChain?.dispose();
+      testChain = null;
+      testGain = null;
       audioCtx?.close();
       audioCtx = null;
       const m = $('#mic-meter', body);
       if (m) m.style.width = '0';
+      const g = $('#gate-level', body);
+      if (g) g.style.width = '0';
       const b = $('#mic-test', body);
       if (b) b.textContent = 'Vamos checar';
     };
@@ -230,15 +273,26 @@ const SECTIONS = {
         return toast('Não foi possível abrir o microfone.', 'error');
       }
       fill(); // agora temos permissão, os nomes dos dispositivos aparecem
-      audioCtx = new AudioContext();
-      const src = audioCtx.createMediaStreamSource(test);
-      testGain = audioCtx.createGain();
-      testGain.gain.value = s.inputGain;
-      const an = audioCtx.createAnalyser();
+      const stream = test;
+      // Mesmo processamento da chamada (RNNoise + gate), para você ouvir o que os outros vão ouvir
+      const ac = new AudioContext({ sampleRate: 48000 });
+      audioCtx = ac;
+      const chain = await buildMicChain(ac, stream, s, {
+        onLevel: ({ level, open }) => {
+          const g = $('#gate-level', body);
+          if (!g) return;
+          g.style.width = gatePct(level) + '%';
+          g.style.background = open ? 'var(--green)' : '#80848e';
+        },
+      });
+      if (test !== stream) return chain.dispose(); // parou o teste enquanto carregava
+      testChain = chain;
+      testGain = chain.gain;
+      const an = ac.createAnalyser();
       an.fftSize = 512;
-      src.connect(testGain).connect(an);
+      chain.output.connect(an);
       // Toca de volta para você se ouvir
-      testGain.connect(audioCtx.destination);
+      chain.output.connect(ac.destination);
       const data = new Uint8Array(an.fftSize);
       const loop = () => {
         an.getByteTimeDomainData(data);

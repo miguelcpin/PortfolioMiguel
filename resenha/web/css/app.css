@@ -467,6 +467,8 @@ body.hide-members #member-list { display: none; }
 .switch input:checked + span::after { transform: translateX(16px); }
 .meter { height: 8px; border-radius: 4px; background: #4e5058; overflow: hidden; margin-top: 12px; }
 .meter i { display: block; height: 100%; width: 0; background: var(--green); transition: width .08s; }
+.gate-meter { position: relative; }
+.gate-meter b { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #fff; }
 input[type=range] { accent-color: var(--brand); width: 100%; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .kbd { display: inline-block; min-width: 24px; padding: 2px 8px; border-radius: 4px; background: #1e1f22; border: 1px solid #4e5058; font-family: var(--mono); font-size: 13px; text-align: center; }

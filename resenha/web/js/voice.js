@@ -5,6 +5,8 @@
 // Usa o padrão "perfect negotiation" do WebRTC para aguentar renegociações
 // (ligar câmera / tela no meio da chamada) dos dois lados ao mesmo tempo.
 
+import { buildMicChain, noiseMode } from './mic-processing.js';
+
 const AUDIO_BITRATE = 128_000; // Discord grátis: 64 kbps
 const CAMERA_BITRATE = 1_500_000;
 const SCREEN_BITRATE = 4_000_000;
@@ -18,6 +20,7 @@ export class VoiceClient extends EventTarget {
     this.peers = new Map(); // socketId -> Peer
     this.localStream = null; // microfone (já processado)
     this.rawMicStream = null;
+    this.micChain = null; // RNNoise -> ganho -> noise gate
     this.cameraStream = null;
     this.screenStream = null;
     this.muted = false;
@@ -27,7 +30,9 @@ export class VoiceClient extends EventTarget {
     this.settings = {
       inputDeviceId: 'default',
       outputDeviceId: 'default',
-      noiseSuppression: true,
+      noiseSuppression: 'ai', // 'ai' (RNNoise) | 'browser' | 'off'
+      noiseGate: true,
+      gateThreshold: -50, // dB
       echoCancellation: true,
       autoGainControl: true,
       inputGain: 1,
@@ -112,7 +117,8 @@ export class VoiceClient extends EventTarget {
     return {
       deviceId: s.inputDeviceId && s.inputDeviceId !== 'default' ? { exact: s.inputDeviceId } : undefined,
       echoCancellation: s.echoCancellation,
-      noiseSuppression: s.noiseSuppression,
+      // Com o RNNoise ligado, o filtro do navegador só piora a voz (processaria duas vezes)
+      noiseSuppression: noiseMode(s) === 'browser',
       autoGainControl: s.autoGainControl,
       channelCount: 1,
       sampleRate: 48000,
@@ -120,7 +126,7 @@ export class VoiceClient extends EventTarget {
   }
 
   async startMic() {
-    this.ctx();
+    const ctx = this.ctx();
     let raw;
     try {
       raw = await navigator.mediaDevices.getUserMedia({ audio: this.micConstraints() });
@@ -129,12 +135,12 @@ export class VoiceClient extends EventTarget {
       raw = await navigator.mediaDevices.getUserMedia({ audio: true });
     }
     this.rawMicStream = raw;
-    // Passa pelo WebAudio para poder aplicar ganho de entrada
-    const src = this.audioCtx.createMediaStreamSource(raw);
-    this.micGain = this.audioCtx.createGain();
-    this.micGain.gain.value = this.settings.inputGain;
-    const dest = this.audioCtx.createMediaStreamDestination();
-    src.connect(this.micGain).connect(dest);
+    // Passa pelo WebAudio: supressão de ruído (RNNoise), ganho de entrada e noise gate
+    this.micChain?.dispose();
+    this.micChain = await buildMicChain(ctx, raw, this.settings);
+    this.micGain = this.micChain.gain;
+    const dest = ctx.createMediaStreamDestination();
+    this.micChain.output.connect(dest);
     this.localStream = dest.stream;
     this.addMeter('local', this.localStream);
     this.applyMicEnabled();
@@ -143,6 +149,9 @@ export class VoiceClient extends EventTarget {
   stopMic() {
     this.rawMicStream?.getTracks().forEach((t) => t.stop());
     this.localStream?.getTracks().forEach((t) => t.stop());
+    this.micChain?.dispose();
+    this.micChain = null;
+    this.micGain = null;
     this.rawMicStream = null;
     this.localStream = null;
     this.meters.delete('local');
@@ -164,6 +173,12 @@ export class VoiceClient extends EventTarget {
   setInputGain(v) {
     this.settings.inputGain = v;
     if (this.micGain) this.micGain.gain.value = v;
+  }
+
+  setNoiseGate(enabled, threshold = this.settings.gateThreshold) {
+    this.settings.noiseGate = enabled;
+    this.settings.gateThreshold = threshold;
+    this.micChain?.setGate(enabled, threshold);
   }
 
   applyMicEnabled() {
