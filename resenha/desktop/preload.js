@@ -11,4 +11,10 @@ contextBridge.exposeInMainWorld('desktop', {
   changeServer: () => ipcRenderer.invoke('change-server'),
   focus: () => ipcRenderer.send('focus'),
   setBadge: (count) => ipcRenderer.send('badge', count),
+  // Hospedar o servidor neste PC
+  hostInfo: () => ipcRenderer.invoke('host-info'),
+  hostStart: (opts) => ipcRenderer.invoke('host-start', opts),
+  hostStop: () => ipcRenderer.invoke('host-stop'),
+  hostKillPort: (port) => ipcRenderer.invoke('host-kill-port', port),
+  hostAutostart: (on) => ipcRenderer.invoke('host-autostart', on),
 });

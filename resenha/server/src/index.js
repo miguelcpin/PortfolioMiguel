@@ -21,7 +21,7 @@ const MAX_USERS = Number(process.env.MAX_USERS) || 10;
 const MAX_UPLOAD = (Number(process.env.MAX_UPLOAD_MB) || 500) * 1024 * 1024;
 const DATA_DIR = path.resolve(path.join(__dirname, '..'), process.env.DATA_DIR || './data');
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
-const WEB_DIR = path.join(__dirname, '..', '..', 'web');
+const WEB_DIR = process.env.WEB_DIR || path.join(__dirname, '..', '..', 'web');
 
 if (!INVITE_CODE) {
   console.warn('[aviso] INVITE_CODE não definido: qualquer pessoa com o endereço pode criar conta (até o limite de ' + MAX_USERS + ').');
@@ -454,10 +454,27 @@ function shutdown() {
   db.flush();
   process.exit(0);
 }
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+
+// Rodando dentro do app desktop ("hospedar neste PC"): quem cuida de encerrar é o app
+const embedded = !!process.env.RESENHA_EMBEDDED;
+if (!embedded) {
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
 
 server.listen(PORT, () => {
   console.log(`Resenha rodando em http://localhost:${PORT}`);
   console.log(`Dados em ${DATA_DIR}`);
 });
+
+module.exports = {
+  server,
+  port: PORT,
+  flush: () => db.flush(),
+  close: () =>
+    new Promise((resolve) => {
+      db.flush();
+      io.close();
+      server.close(() => resolve());
+    }),
+};

@@ -6,7 +6,7 @@ import {
 } from './util.js';
 import { renderMarkdown, mentionsUser, isEmojiOnly } from './markdown.js';
 import { VoiceClient } from './voice.js';
-import { openSettings } from './settings.js';
+import { openSettings, hostAddressesHtml, bindCopy } from './settings.js';
 import { isNative, abs, serverBase, setServerBase, serverLabel } from './config.js';
 
 const desktop = window.desktop || null;
@@ -243,6 +243,7 @@ function connect() {
     }
     renderAll();
     openChannel(S.current, true);
+    if (!reconnect) maybeHostWelcome();
     if (S.prefs.notifications && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission();
   });
 
@@ -1577,6 +1578,21 @@ window.addEventListener('blur', () => voice?.setPushToTalkActive(false));
 
 function isTypingTarget(t) {
   return t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.isContentEditable);
+}
+
+// Primeira vez hospedando no PC: mostra o que mandar para os amigos
+async function maybeHostWelcome() {
+  const info = await desktop?.hostInfo?.().catch(() => null);
+  if (!info?.running || storage.get('hostWelcomeShown', false)) return;
+  storage.set('hostWelcomeShown', true);
+  const m = openModal(`<div class="modal-body">
+      <h2>🎉 Seu servidor está no ar!</h2>
+      <p class="muted" style="font-size:14px">Mande para cada amigo: o app (ou o link do navegador), um destes endereços e o código de convite.</p>
+      ${hostAddressesHtml(info)}
+      <p class="muted" style="font-size:13px">Amigos fora da sua casa: instale o Tailscale neste PC e no aparelho deles (grátis). Você acha tudo isso depois em Configurações &gt; Notificações e app.</p>
+    </div>
+    <div class="modal-footer"><button class="btn primary" data-close>Entendi</button></div>`, { className: 'wide' });
+  bindCopy(m.el);
 }
 
 // ======================================================================
