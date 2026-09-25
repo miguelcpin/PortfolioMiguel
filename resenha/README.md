@@ -61,6 +61,9 @@ Onde o Discord continua melhor (seria desonesto dizer o contrário):
 
 O servidor precisa ficar ligado enquanto vocês usam. Escolha **uma** opção:
 
+#### Opção 0 (a mais fácil): o próprio app hospeda
+Instale o app do Resenha no PC que vai ser o servidor (`Resenha-Setup.exe` no Windows) e, na primeira tela, clique em **Hospedar um servidor neste PC**. Escolha o nome e o código de convite e pronto. O app mostra os endereços para mandar aos amigos (Wi-Fi e Tailscale) e pode ligar sozinho quando o PC iniciar. Não precisa instalar Node.js nem usar terminal. O servidor fica no ar enquanto o app estiver aberto: fechar a janela só esconde o app perto do relógio. Os dados ficam na pasta do app (`%APPDATA%\Resenha\servidor-dados`). Para amigos fora da sua casa, use o Tailscale (Opção B).
+
 #### Opção A (recomendada): VM grátis para sempre na Oracle Cloud
 A Oracle dá de graça, sem prazo, uma VM ARM com 4 núcleos e 24 GB de RAM ("Always Free"). Fica ligada 24h.
 

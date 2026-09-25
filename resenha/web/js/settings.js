@@ -72,6 +72,47 @@ function installHtml(ctx) {
   return '<h3>Instalar</h3><p class="muted" style="font-size:14px">Use o menu do navegador (⋮) e escolha <b>Instalar app</b> ou <b>Adicionar à tela inicial</b>.</p>';
 }
 
+// Endereços do servidor hospedado no próprio PC (app desktop)
+export function hostAddressesHtml(info) {
+  const label = { lan: 'Mesmo Wi-Fi / rede', tailscale: 'Tailscale (de qualquer lugar)', outro: 'Outra rede' };
+  const rows = info.addresses.length
+    ? info.addresses.map((a) => `<div class="host-addr"><span class="muted">${label[a.kind]}</span><code>${escapeHtml(a.url)}</code><button class="btn secondary" data-copy="${escapeHtml(a.url)}">Copiar</button></div>`).join('')
+    : '<p class="muted" style="font-size:14px">Nenhuma rede encontrada: conecte o PC ao Wi-Fi.</p>';
+  return `${rows}
+    <div class="host-addr"><span class="muted">Código de convite</span><code>${escapeHtml(info.inviteCode)}</code><button class="btn secondary" data-copy="${escapeHtml(info.inviteCode)}">Copiar</button></div>`;
+}
+
+export function bindCopy(root) {
+  $$('[data-copy]', root).forEach((b) => b.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(b.dataset.copy);
+      toast('Copiado!', 'success');
+    } catch {
+      toast(b.dataset.copy);
+    }
+  }));
+}
+
+async function renderHostPanel(body, ctx) {
+  const info = await ctx.desktop?.hostInfo?.().catch(() => null);
+  if (!info?.running) return;
+  const box = h(`<div>
+    <h3>Servidor neste PC</h3>
+    <p class="muted" style="font-size:14px">✅ Este computador está hospedando o servidor. Mande um destes endereços + o código para os amigos:</p>
+    ${hostAddressesHtml(info)}
+    <div class="switch-row"><div class="sr-text"><b>Ligar sozinho quando o PC iniciar</b><small>O app abre escondido perto do relógio e o servidor fica disponível.</small></div><label class="switch"><input type="checkbox" id="host-auto" ${info.autostart ? 'checked' : ''}><span></span></label></div>
+    <p class="muted" style="font-size:13px">Dados (contas, mensagens e arquivos) em <code>${escapeHtml(info.dataDir)}</code>. O servidor desliga se você sair do app pelo ícone perto do relógio.</p>
+    <button class="btn danger" id="host-stop">Desligar e parar de hospedar</button>
+  </div>`);
+  bindCopy(box);
+  $('#host-auto', box).addEventListener('change', (e) => ctx.desktop.hostAutostart(e.target.checked));
+  $('#host-stop', box).addEventListener('click', async () => {
+    if (!(await confirmDialog({ title: 'Parar de hospedar', text: 'O servidor será desligado e ninguém conseguirá se conectar até você ligar de novo. Os dados continuam salvos neste PC.', confirm: 'Desligar' }))) return;
+    ctx.desktop.hostStop();
+  });
+  body.append(box);
+}
+
 const SECTIONS = {
   account(body, ctx) {
     const { S, socket } = ctx;
@@ -268,6 +309,7 @@ const SECTIONS = {
       <p class="muted" style="font-size:14px">**negrito** · *itálico* · __sublinhado__ · ~~riscado~~ · ||spoiler|| · \`código\` · \`\`\`bloco\`\`\` · &gt; citação · @nome</p>
       ${installHtml(ctx)}
       ${desktop || ctx.isNative ? `<h3>Servidor</h3><p class="muted" style="font-size:14px">Conectado a <b>${escapeHtml(serverLabel())}</b></p><button class="btn secondary" id="chg-srv">Trocar servidor</button>` : ''}`;
+    renderHostPanel(body, ctx);
     $('#install-btn', body)?.addEventListener('click', async () => {
       await ctx.installApp();
       SECTIONS.app(body, ctx);

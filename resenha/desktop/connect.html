@@ -22,6 +22,19 @@
     button:disabled { opacity: .6; cursor: default; }
     .err { color: #fa777c; font-size: 14px; margin-top: 12px; text-align: left; }
     .hint { font-size: 13px; text-align: left; }
+    main { overflow-y: auto; padding: 24px 0; }
+    .or { display: flex; align-items: center; gap: 10px; margin: 24px 0 0; color: #949ba4; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .or::before, .or::after { content: ''; flex: 1; height: 1px; background: #3f4147; }
+    button.secondary { background: #4e5058; }
+    button.secondary:hover { background: #6d6f78; }
+    button.green { background: #23a55a; }
+    button.green:hover { background: #1a8b4c; }
+    .check { display: flex; align-items: center; gap: 10px; margin-top: 16px; font-size: 14px; color: #dbdee1; text-transform: none; font-weight: 400; cursor: pointer; }
+    .check input { width: 18px; height: 18px; accent-color: #5865f2; }
+    .row { display: flex; gap: 12px; }
+    .row > div { flex: 1; }
+    .row > div.small { flex: 0 0 110px; }
+    a { color: #00a8fc; cursor: pointer; }
   </style>
 </head>
 <body>
@@ -36,6 +49,30 @@
       <div class="err" id="err" hidden></div>
       <button id="go">Conectar</button>
       <p class="hint">Dica: o endereço é aquele que aparece quando o dono roda o servidor (ex.: link do Cloudflare Tunnel, IP do Tailscale ou domínio próprio).</p>
+      <div class="or">ou</div>
+      <button type="button" class="secondary" id="show-host">🖥️ Hospedar um servidor neste PC</button>
+    </form>
+
+    <form id="h" hidden>
+      <img src="build/icon.png" alt="">
+      <h1>Hospedar neste PC</h1>
+      <p>Este computador vira o servidor. Seus amigos se conectam nele.</p>
+      <label for="h-name">Nome do servidor</label>
+      <input id="h-name" value="Resenha" maxlength="50">
+      <div class="row">
+        <div>
+          <label for="h-invite">Código de convite</label>
+          <input id="h-invite" maxlength="40" spellcheck="false">
+        </div>
+        <div class="small">
+          <label for="h-port">Porta</label>
+          <input id="h-port" type="number" value="3000" min="1024" max="65535">
+        </div>
+      </div>
+      <label class="check"><input type="checkbox" id="h-auto" checked> Ligar o servidor sozinho quando o PC iniciar</label>
+      <div class="err" id="h-err" hidden></div>
+      <button class="green" id="h-go">Criar e ligar o servidor</button>
+      <p class="hint">O servidor fica ligado enquanto o app estiver aberto (fechar a janela só esconde perto do relógio). Se o Windows perguntar sobre o Firewall, marque <b>Redes privadas</b> e clique em <b>Permitir</b>. <a id="back">← Voltar</a></p>
     </form>
   </main>
   <script>
@@ -46,6 +83,37 @@
     const go = document.getElementById('go');
     url.value = q.get('server') || '';
     if (q.get('error')) { err.textContent = q.get('error'); err.hidden = false; }
+
+    // ----- hospedar -----
+    const $ = (id) => document.getElementById(id);
+    async function showHost(error) {
+      $('f').hidden = true;
+      $('h').hidden = false;
+      const info = await window.desktop.hostInfo();
+      $('h-name').value = info.serverName || 'Resenha';
+      $('h-invite').value = info.inviteCode || info.suggestedInvite;
+      $('h-port').value = info.port || 3000;
+      $('h-auto').checked = info.enabled ? info.autostart : true;
+      if (error) { $('h-err').textContent = error; $('h-err').hidden = false; }
+    }
+    $('show-host').addEventListener('click', () => showHost());
+    $('back').addEventListener('click', () => { $('h').hidden = true; $('f').hidden = false; });
+    if (q.get('host')) { err.hidden = true; showHost(q.get('error')); }
+
+    $('h').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      $('h-go').disabled = true; $('h-go').textContent = 'Ligando…'; $('h-err').hidden = true;
+      const res = await window.desktop.hostStart({
+        serverName: $('h-name').value,
+        inviteCode: $('h-invite').value,
+        port: $('h-port').value,
+        autostart: $('h-auto').checked,
+      });
+      if (res?.error) {
+        $('h-err').textContent = res.error; $('h-err').hidden = false;
+        $('h-go').disabled = false; $('h-go').textContent = 'Criar e ligar o servidor';
+      }
+    });
 
     document.getElementById('f').addEventListener('submit', async (e) => {
       e.preventDefault();
