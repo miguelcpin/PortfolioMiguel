@@ -89,6 +89,14 @@ A Oracle dá de graça, sem prazo, uma VM ARM com 4 núcleos e 24 GB de RAM ("Al
 #### Opção B (mais fácil): servidor no seu PC + Tailscale
 Bom se o seu PC fica ligado quando vocês jogam.
 
+**Windows em um comando:** abra o PowerShell e cole
+```powershell
+irm https://raw.githubusercontent.com/miguelcpin/PortfolioMiguel/main/resenha/tools/instalar-windows.ps1 | iex
+```
+Ele instala o Node.js se faltar, baixa o Resenha para `%USERPROFILE%\Resenha`, pergunta o código de convite, cria o atalho **Ligar Resenha** na Área de Trabalho, mostra os endereços (Wi-Fi e Tailscale) e liga o servidor. Os dados ficam em `%USERPROFILE%\Resenha\dados`. Rodar o comando de novo atualiza o app sem perder nada.
+
+Manualmente:
+
 1. Instale o Node.js 18+ (<https://nodejs.org>).
 2. Na pasta `resenha/server`: `npm install`, copie `.env.example` para `.env`, defina `INVITE_CODE` e rode `npm start`.
 3. Todo mundo instala o **Tailscale** (<https://tailscale.com>, grátis até 100 dispositivos) e você convida os amigos para a sua rede Tailscale.
