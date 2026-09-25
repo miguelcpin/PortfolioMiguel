@@ -36,6 +36,129 @@ if (process.env.TURN_URLS) {
   });
 }
 
+// TURN da Cloudflare: retransmite voz/vídeo quando a conexão direta falha (4G, redes com NAT
+// simétrico). A chave fica só aqui no servidor; o app recebe credenciais que expiram.
+const CF_TURN_KEY_ID = process.env.CF_TURN_KEY_ID || '';
+const CF_TURN_API_TOKEN = process.env.CF_TURN_API_TOKEN || '';
+const CF_TURN_TTL = 24 * 3600; // segundos
+let cfTurn = null; // { servers, expiresAt }
+let cfTurnPending = null;
+
+async function fetchCloudflareTurn() {
+  const res = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(CF_TURN_KEY_ID)}/credentials/generate-ice-servers`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${CF_TURN_API_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ttl: CF_TURN_TTL }),
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!res.ok) throw new Error(`Cloudflare TURN respondeu ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const { iceServers } = await res.json();
+  // A porta alternativa 53 é bloqueada pelos navegadores e só atrasaria a conexão
+  const servers = (iceServers || []).map((s) => ({ ...s, urls: [].concat(s.urls).filter((u) => !/:53(\?|$)/.test(u)) }));
+  cfTurn = { servers, expiresAt: Date.now() + CF_TURN_TTL * 1000 };
+  return servers;
+}
+
+// ---------- trava de gastos do TURN ----------
+// A Cloudflare dá 1.000 GB/mês grátis e depois cobra no cartão, sem cortar o serviço.
+// Com CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN, o servidor confere o consumo do mês e para de
+// entregar TURN ao passar de TURN_MONTHLY_LIMIT_GB, bem antes da cota grátis acabar.
+const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID || '';
+const CF_ANALYTICS_TOKEN = process.env.CF_ANALYTICS_TOKEN || '';
+const TURN_LIMIT_BYTES = (Number(process.env.TURN_MONTHLY_LIMIT_GB) || 800) * 1e9;
+const TURN_USAGE_EVERY = 15 * 60 * 1000;
+const TURN_USAGE_MAX_AGE = 6 * 3600 * 1000; // sem conferir há 6 h: não arrisca
+const turnGuard = !!(CF_ACCOUNT_ID && CF_ANALYTICS_TOKEN);
+const turnUsage = { bytes: null, checkedAt: 0, error: null };
+
+async function checkTurnUsage() {
+  const now = new Date();
+  const since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  try {
+    const res = await fetch('https://api.cloudflare.com/client/v4/graphql', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${CF_ANALYTICS_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: `query($acct: string!, $since: Time!) { viewer { accounts(filter: { accountTag: $acct }) {
+          callsTurnUsageAdaptiveGroups(filter: { datetimeMinute_geq: $since }, limit: 1) { sum { egressBytes } } } } }`,
+        variables: { acct: CF_ACCOUNT_ID, since },
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const json = await res.json();
+    if (json.errors?.length) throw new Error(json.errors.map((e) => e.message).join('; '));
+    const groups = json.data?.viewer?.accounts?.[0]?.callsTurnUsageAdaptiveGroups;
+    if (!groups) throw new Error('resposta sem dados de uso');
+    turnUsage.bytes = groups.reduce((n, g) => n + (g.sum?.egressBytes || 0), 0);
+    turnUsage.checkedAt = Date.now();
+    turnUsage.error = null;
+    // Passou do limite e ainda há credencial entregue: corta (cfTurn vira null, avisa uma vez)
+    if (turnUsage.bytes >= TURN_LIMIT_BYTES && cfTurn) {
+      console.warn(`[turn] limite do mês atingido (${(turnUsage.bytes / 1e9).toFixed(1)} GB): TURN desligado até o mês que vem`);
+      revokeCloudflareTurn();
+    }
+  } catch (e) {
+    turnUsage.error = e.message;
+    console.warn('[turn] não consegui ler o consumo:', e.message);
+  }
+}
+
+// Bloqueado se passou do limite ou se não dá para saber o consumo (sem dados recentes)
+function turnBlocked() {
+  if (!turnGuard) return false;
+  if (!turnUsage.checkedAt || Date.now() - turnUsage.checkedAt > TURN_USAGE_MAX_AGE) return true;
+  return turnUsage.bytes >= TURN_LIMIT_BYTES;
+}
+
+// Tenta invalidar as credenciais já entregues. Nos testes a Cloudflare aceitou (204), mas a
+// credencial seguiu funcionando: conte com até CF_TURN_TTL (24 h) de uso depois da trava
+// disparar. A folga entre o limite (800 GB) e a cota grátis (1.000 GB) cobre isso.
+async function revokeCloudflareTurn() {
+  const username = cfTurn?.servers.find((s) => s.username)?.username;
+  cfTurn = null;
+  if (!username) return;
+  try {
+    await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(CF_TURN_KEY_ID)}/credentials/${encodeURIComponent(username)}/revoke`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${CF_TURN_API_TOKEN}` },
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (e) {
+    console.warn('[turn] falha ao revogar credencial:', e.message);
+  }
+}
+
+if (turnGuard && CF_TURN_KEY_ID) {
+  checkTurnUsage();
+  setInterval(checkTurnUsage, TURN_USAGE_EVERY).unref();
+}
+
+function turnStatus() {
+  return {
+    enabled: !!(CF_TURN_KEY_ID && CF_TURN_API_TOKEN),
+    guard: turnGuard,
+    usedGb: turnUsage.bytes == null ? null : +(turnUsage.bytes / 1e9).toFixed(2),
+    limitGb: TURN_LIMIT_BYTES / 1e9,
+    blocked: turnBlocked(),
+    checkedAt: turnUsage.checkedAt || null,
+    error: turnUsage.error,
+  };
+}
+
+// Servidores ICE para uma chamada. Renova as credenciais com folga (quem entra agora
+// tem pelo menos 12 h de chamada). Se a Cloudflare falhar, segue só com STUN.
+async function getIceServers() {
+  if (!CF_TURN_KEY_ID || !CF_TURN_API_TOKEN) return ICE_SERVERS;
+  if (turnBlocked()) return ICE_SERVERS;
+  if (!cfTurn || cfTurn.expiresAt - Date.now() < 12 * 3600 * 1000) {
+    cfTurnPending ??= fetchCloudflareTurn()
+      .catch((e) => console.warn('[turn]', e.message))
+      .finally(() => (cfTurnPending = null));
+    await cfTurnPending;
+  }
+  return cfTurn && cfTurn.expiresAt > Date.now() ? [...ICE_SERVERS, ...cfTurn.servers] : ICE_SERVERS;
+}
+
 const db = new Db(DATA_DIR, { serverName: process.env.SERVER_NAME || 'Resenha' });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -378,6 +501,12 @@ io.on('connection', (socket) => {
     ack?.({ ok: true });
   });
 
+  socket.on('turn:status', async (_ = {}, ack) => {
+    if (!requireAdmin(ack)) return;
+    if (turnGuard && Date.now() - turnUsage.checkedAt > 60 * 1000) await checkTurnUsage();
+    ack?.(turnStatus());
+  });
+
   socket.on('server:update', ({ name, icon } = {}, ack) => {
     if (!requireAdmin(ack)) return;
     if (typeof name === 'string' && name.trim()) db.data.serverName = name.trim().slice(0, 50);
@@ -405,9 +534,12 @@ io.on('connection', (socket) => {
   });
 
   // ----- voz / vídeo (WebRTC em malha, o servidor só faz a sinalização) -----
-  socket.on('voice:join', ({ channelId, muted, deafened } = {}, ack) => {
+  socket.on('voice:join', async ({ channelId, muted, deafened } = {}, ack) => {
     const channel = db.getChannel(channelId);
     if (!channel || channel.type !== 'voice') return ack?.({ error: 'Canal de voz inválido.' });
+    // Credenciais do TURN novas a cada entrada (as antigas podem ter expirado)
+    const iceServers = await getIceServers();
+    if (!socket.connected) return;
     leaveVoice(socket);
     const members = voice.get(channelId) || new Map();
     const peers = [...members.entries()].map(([socketId, s]) => ({ socketId, userId: s.userId }));
@@ -417,7 +549,7 @@ io.on('connection', (socket) => {
     socket.join(`voice:${channelId}`);
     socket.to(`voice:${channelId}`).emit('voice:peer-joined', { socketId: socket.id, userId });
     broadcastVoice(channelId);
-    ack?.({ ok: true, peers });
+    ack?.({ ok: true, peers, iceServers });
   });
 
   socket.on('voice:leave', () => leaveVoice(socket));

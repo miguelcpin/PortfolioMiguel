@@ -1,6 +1,6 @@
 // Service worker do Resenha: deixa o app instalável, abre rápido e funciona
 // como "casca" offline. A API, o socket e os arquivos enviados nunca são cacheados.
-const CACHE = 'resenha-v3';
+const CACHE = 'resenha-v8';
 const SHELL = [
   './',
   'index.html',

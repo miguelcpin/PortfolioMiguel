@@ -7,6 +7,9 @@
 
 import { buildMicChain, noiseMode } from './mic-processing.js';
 
+// Áudio da tela chega num stream que também tem o vídeo da tela; o microfone vem sozinho
+const isScreenAudio = (el) => !!el.srcObject?.getVideoTracks().length;
+
 const AUDIO_BITRATE = 128_000; // Discord grátis: 64 kbps
 const CAMERA_BITRATE = 1_500_000;
 const SCREEN_BITRATE = 4_000_000;
@@ -26,7 +29,8 @@ export class VoiceClient extends EventTarget {
     this.muted = false;
     this.deafened = false;
     this.speaking = new Map(); // key -> boolean  (key = 'local' ou socketId)
-    this.userVolumes = new Map(); // userId -> 0..1
+    this.userVolumes = new Map(); // userId -> 0..1 (microfone)
+    this.screenVolumes = new Map(); // userId -> 0..1 (áudio da tela compartilhada)
     this.settings = {
       inputDeviceId: 'default',
       outputDeviceId: 'default',
@@ -78,6 +82,8 @@ export class VoiceClient extends EventTarget {
       this.stopMic();
       throw new Error(res.error);
     }
+    // Credenciais do TURN geradas agora pelo servidor (as do login podem ter expirado)
+    if (res.iceServers) this.iceServers = res.iceServers;
     this.channelId = channelId;
     for (const p of res.peers) {
       const peer = this.ensurePeer(p.socketId, p.userId);
@@ -218,9 +224,17 @@ export class VoiceClient extends EventTarget {
     for (const peer of this.peers.values()) if (peer.userId === userId) this.applyPeerVolume(peer);
   }
 
+  setScreenVolume(userId, v) {
+    this.screenVolumes.set(userId, v);
+    for (const peer of this.peers.values()) if (peer.userId === userId) this.applyPeerVolume(peer);
+  }
+
   applyPeerVolume(peer) {
-    const vol = this.deafened ? 0 : this.userVolumes.get(peer.userId) ?? 1;
-    for (const el of peer.audioEls) el.volume = Math.max(0, Math.min(1, vol));
+    for (const el of peer.audioEls) {
+      const vols = isScreenAudio(el) ? this.screenVolumes : this.userVolumes;
+      const vol = this.deafened ? 0 : vols.get(peer.userId) ?? 1;
+      el.volume = Math.max(0, Math.min(1, vol));
+    }
   }
 
   async setOutputDevice(deviceId) {
@@ -287,7 +301,13 @@ export class VoiceClient extends EventTarget {
     // No app desktop o seletor de janela/tela é mostrado antes (ver app.js)
     this.screenStream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 30, max: 60 }, width: { max: 1920 }, height: { max: 1080 } },
-      audio: true,
+      // Som do jogo/vídeo/música: sem os filtros de voz, que cortam e abafam o áudio.
+      // restrictOwnAudio tira o som do próprio Resenha (as vozes da chamada) quando o navegador suporta.
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, suppressLocalAudioPlayback: false, restrictOwnAudio: true },
+      systemAudio: 'include', // mostra a opção "Compartilhar áudio do sistema" ao escolher a tela inteira
+      windowAudio: 'system',
+      surfaceSwitching: 'include',
+      selfBrowserSurface: 'exclude',
     });
     const video = this.screenStream.getVideoTracks()[0];
     if ('contentHint' in video) video.contentHint = 'detail';
@@ -297,6 +317,7 @@ export class VoiceClient extends EventTarget {
     }
     this.socket.emit('voice:update', { screenStreamId: this.screenStream.id });
     this.emit('change');
+    return { audio: this.screenStream.getAudioTracks().length > 0 };
   }
 
   stopScreen(notify = true) {
@@ -363,6 +384,8 @@ export class VoiceClient extends EventTarget {
       const stream = streams[0] || new MediaStream([track]);
       peer.streams.set(stream.id, stream);
       if (track.kind === 'audio') this.playRemoteAudio(peer, stream);
+      // O vídeo da tela pode chegar depois do áudio: reclassifica volume (voz x transmissão)
+      this.applyPeerVolume(peer);
       track.addEventListener('ended', () => this.emit('change'));
       stream.onremovetrack = () => {
         if (!stream.getTracks().length) peer.streams.delete(stream.id);
@@ -414,8 +437,11 @@ export class VoiceClient extends EventTarget {
     peer.audioEls.push(el);
     this.applyPeerVolume(peer);
     el.play().catch(() => {});
-    // Medidor de fala só do microfone (primeiro stream de áudio do par)
-    if (!this.meters.has(peer.socketId)) this.addMeter(peer.socketId, stream);
+    // Medidor de fala só do microfone, nunca do áudio da tela. Espera o resto dos
+    // ontrack da mesma negociação para saber se o stream também tem vídeo.
+    setTimeout(() => {
+      if (!this.meters.has(peer.socketId) && !isScreenAudio(el) && this.peers.get(peer.socketId) === peer) this.addMeter(peer.socketId, stream);
+    }, 0);
   }
 
   async handleSignal(peer, { description, candidate }) {

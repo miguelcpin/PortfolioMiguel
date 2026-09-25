@@ -360,7 +360,25 @@ const SECTIONS = {
           </div>
         </div>
         <h3>Convidar amigos</h3>
-        <p class="muted" style="font-size:14px">Mande para cada amigo: (1) o instalador do app, (2) o endereço <b>${escapeHtml(serverLabel())}</b> e (3) o código de convite que você definiu em <code>INVITE_CODE</code> no servidor. Vagas usadas: ${S.users.size}.</p>`;
+        <p class="muted" style="font-size:14px">Mande para cada amigo: (1) o instalador do app, (2) o endereço <b>${escapeHtml(serverLabel())}</b> e (3) o código de convite que você definiu em <code>INVITE_CODE</code> no servidor. Vagas usadas: ${S.users.size}.</p>
+        <div id="turn-box"></div>`;
+      // Consumo do TURN no mês (a trava desliga antes da cota grátis da Cloudflare acabar)
+      ctx.emitAck('turn:status', {}).then((t) => {
+        const box = $('#turn-box', body);
+        if (!box || !t?.enabled) return;
+        const pct = t.usedGb == null ? 0 : Math.min(100, (t.usedGb / t.limitGb) * 100);
+        const state = !t.guard
+          ? 'Sem trava de gastos configurada.'
+          : t.usedGb == null
+            ? `Não consegui ler o consumo${t.error ? ` (${escapeHtml(t.error)})` : ''}. Por segurança, o TURN fica desligado até conseguir.`
+            : t.blocked
+              ? 'Limite do mês atingido: o TURN está desligado até o mês que vem (quem conecta direto continua normal).'
+              : 'Ativo. Só é usado quando a conexão direta falha (4G, redes restritas).';
+        box.innerHTML = `<h3>Retransmissão de voz (TURN da Cloudflare)</h3>
+          ${t.guard && t.usedGb != null ? `<div class="meter"><i style="width:${pct}%;background:${t.blocked ? 'var(--red)' : pct > 75 ? 'var(--yellow)' : 'var(--green)'}"></i></div>
+          <p style="font-size:14px;margin-top:8px"><b>${t.usedGb.toLocaleString('pt-BR')} GB</b> de ${t.limitGb} GB este mês (a Cloudflare cobra só acima de 1.000 GB)</p>` : ''}
+          <p class="muted" style="font-size:14px">${state}</p>`;
+      });
       $('#srv-save', body).addEventListener('click', async () => {
         const res = await ctx.emitAck('server:update', { name: $('#srv-name', body).value });
         res.error ? toast(res.error, 'error') : toast('Salvo!', 'success');

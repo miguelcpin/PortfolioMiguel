@@ -32,6 +32,7 @@ const S = {
   view: 'text', // 'text' | 'voice'
   voiceViewChannel: null,
   focusTile: null,
+  fullTile: null, // vídeo aberto em tela cheia (câmera ou tela compartilhada)
   messages: new Map(),
   hasMore: new Map(),
   loadingOlder: false,
@@ -180,6 +181,7 @@ function connect() {
   voice = new VoiceClient(socket);
   Object.assign(voice.settings, storage.get('voiceSettings', {}));
   voice.userVolumes = new Map(Object.entries(storage.get('userVolumes', {})));
+  voice.screenVolumes = new Map(Object.entries(storage.get('screenVolumes', {})));
   voice.addEventListener('change', () => {
     renderChannels();
     renderVoicePanel();
@@ -524,7 +526,7 @@ function channelMenu(e, c) {
   if (items.length) contextMenu(e.clientX, e.clientY, items);
 }
 
-function userMenu(e, u) {
+function userMenu(e, u, { screen = false } = {}) {
   e.preventDefault();
   e.stopPropagation();
   const items = [{ label: 'Perfil', action: () => showProfile(u, e) }, { label: 'Mencionar', action: () => insertText(`@${u.username} `) }];
@@ -534,7 +536,15 @@ function userMenu(e, u) {
       voice.setUserVolume(u.id, ev.target.value / 100);
       storage.set('userVolumes', Object.fromEntries(voice.userVolumes));
     });
-    items.push('-', { custom: slider });
+    // Som da tela compartilhada tem volume próprio (jogo/vídeo alto sem abaixar a voz)
+    const sharing = (S.voice[voice.channelId] || []).some((m) => m.userId === u.id && m.screenStreamId);
+    const screenSlider = sharing && h(`<div class="menu-slider">Volume da transmissão<input type="range" min="0" max="100" value="${Math.round((voice.screenVolumes.get(u.id) ?? 1) * 100)}"></div>`);
+    screenSlider && $('input', screenSlider).addEventListener('input', (ev) => {
+      voice.setScreenVolume(u.id, ev.target.value / 100);
+      storage.set('screenVolumes', Object.fromEntries(voice.screenVolumes));
+    });
+    // No quadrado da tela, o volume da transmissão vem primeiro
+    items.push('-', ...(screenSlider ? (screen ? [{ custom: screenSlider }, { custom: slider }] : [{ custom: slider }, { custom: screenSlider }]) : [{ custom: slider }]));
   }
   if (S.me.isAdmin && u.id !== S.me.id) {
     items.push('-', { label: `Expulsar ${u.username}`, danger: true, action: () => kickUser(u) });
@@ -685,12 +695,17 @@ async function toggleCamera() {
 async function toggleScreen() {
   if (voice.screenStream) return voice.stopScreen();
   try {
+    let wantAudio = true;
     if (desktop?.getSources) {
       const picked = await pickScreenSource();
       if (!picked) return;
+      wantAudio = picked.audio;
       await desktop.selectSource(picked.id, picked.audio);
     }
-    await voice.startScreen();
+    const { audio } = await voice.startScreen();
+    if (!audio && wantAudio) {
+      toast(desktop ? 'Transmitindo sem som: o áudio do computador só funciona no Windows.' : 'Transmitindo sem som. Para enviar o áudio, pare e compartilhe de novo marcando "Compartilhar áudio" no seletor do navegador.', 'info');
+    }
   } catch (e) {
     if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') toast('Não foi possível compartilhar a tela.', 'error');
   }
@@ -766,6 +781,7 @@ function renderVoiceView() {
   const inThis = voice.channelId === cid;
 
   if (!inThis) {
+    exitFullTile(false);
     view.innerHTML = `<div class="vv-empty">
       <h2>${escapeHtml(c.name)}</h2>
       <div>${members.length ? `${members.length} pessoa(s) na sala` : 'Ninguém está na sala ainda.'}</div>
@@ -788,46 +804,47 @@ function renderVoiceView() {
     }
   }
 
+  // Tela cheia: só o vídeo escolhido, por cima de tudo
+  const full = S.fullTile && tiles.find((t) => t.key === S.fullTile && t.stream);
+  if (S.fullTile && !full) exitFullTile(false); // a transmissão acabou
+  if (full) {
+    renderFullTile(full);
+    dropUnusedVideos(tiles);
+    return;
+  }
+
   const focused = tiles.find((t) => t.key === S.focusTile);
   const main = focused ? [focused] : tiles;
   const rest = focused ? tiles.filter((t) => t !== focused) : [];
-  const portrait = (view.clientHeight || 600) > (view.clientWidth || 800) * 1.2;
-  // Celular em pé: vídeos empilhados em vez de lado a lado
-  const cols = portrait
-    ? (main.length <= 3 ? 1 : 2)
-    : main.length <= 1 ? 1 : main.length <= 4 ? 2 : main.length <= 9 ? 3 : 4;
 
   const tileEl = (t) => {
     const connState = t.m.socketId === socket.id ? 'connected' : voice.connectionState(t.m.socketId);
     const el = h(`<div class="vv-tile ${!t.screen && voice.isSpeaking(t.m.socketId) && !t.m.muted ? 'speaking' : ''}" ${t.screen ? '' : `data-speak="${t.m.socketId}"`}>
       <div class="vt-name">${t.m.muted || t.m.deafened ? icons.micOff : ''}${escapeHtml(t.label)}</div>
       ${connState !== 'connected' ? `<div class="vt-state">${connState === 'failed' ? 'Falhou' : 'Conectando…'}</div>` : ''}
-      <button class="vt-full" title="Tela cheia">${icons.expand}</button>
+      ${t.screen && t.stream && t.m.socketId !== socket.id ? `<button class="vt-vol" title="Volume da transmissão">${icons.speaker}</button>` : ''}
+      ${t.stream ? `<button class="vt-full" title="Tela cheia">${icons.expand}</button>` : ''}
     </div>`);
     if (t.stream) el.prepend(videoFor(t.key, t.stream, { mirror: t.mirror }));
     else if (t.screen) el.prepend(h('<div class="muted">Carregando transmissão…</div>'));
     else el.prepend(h(`<div class="vt-avatar">${avatarHtml(t.u, 80)}</div>`));
     el.addEventListener('click', (e) => {
       if (e.target.closest('.vt-full')) {
-        const v = el.querySelector('video');
-        if (v) v.requestFullscreen?.();
+        enterFullTile(t.key);
+        return;
+      }
+      if (e.target.closest('.vt-vol')) {
+        userMenu(e, t.u, { screen: true });
         return;
       }
       S.focusTile = S.focusTile === t.key ? null : t.key;
       renderVoiceView();
     });
-    bindMenu(el, (e) => userMenu(e, t.u));
+    bindMenu(el, (e) => userMenu(e, t.u, { screen: !!t.screen }));
     return el;
   };
 
   const grid = h(`<div class="vv-grid ${focused ? 'focus' : ''}"></div>`);
-  const vh = view.clientHeight || 600;
-  const vw = view.clientWidth || 800;
-  const rows = Math.ceil(main.length / cols);
-  const avail = vh - 120 - (rest.length ? 110 : 0);
-  // Largura máxima da tile respeitando 16:9 para caber na altura disponível
-  const tileW = Math.min((vw - 32 - (cols - 1) * 8) / cols, ((avail - (rows - 1) * 8) / rows) * (16 / 9));
-  grid.style.gridTemplateColumns = `repeat(${cols}, ${Math.max(160, Math.floor(tileW))}px)`;
   main.forEach((t) => grid.append(tileEl(t)));
 
   const controls = h(`<div class="vv-controls">
@@ -855,13 +872,125 @@ function renderVoiceView() {
   $('#vv-deaf').addEventListener('click', toggleDeafen);
   $('#vv-hang').addEventListener('click', leaveVoice);
 
-  // Remove vídeos que não estão mais em uso
+  // Tamanho medido de verdade depois de montar (a faixa e os controles já ocupam o espaço deles)
+  layoutGrid(grid, !!focused);
+  dropUnusedVideos(tiles);
+}
+
+// Escolhe quantas colunas deixam cada vídeo (16:9) o maior possível sem sair da área,
+// tanto com o celular em pé quanto deitado. A última linha fica centralizada (flex-wrap).
+// No destaque, o vídeo ocupa a área toda. Tamanhos em px para não depender de height: 100%.
+function layoutGrid(grid, focused = false) {
+  const n = grid.children.length;
+  if (!n) return;
+  const cs = getComputedStyle(grid);
+  const gap = parseFloat(cs.columnGap) || 8;
+  const W = grid.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const H = grid.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  if (W <= 0 || H <= 0) return;
+  if (focused) {
+    for (const el of grid.children) {
+      el.style.width = Math.floor(W) + 'px';
+      el.style.height = Math.floor(H) + 'px';
+    }
+    return;
+  }
+  let best = 0;
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    const w = Math.min((W - (cols - 1) * gap) / cols, ((H - (rows - 1) * gap) / rows) * (16 / 9));
+    best = Math.max(best, w);
+  }
+  const w = Math.max(48, Math.floor(best));
+  for (const el of grid.children) el.style.width = w + 'px';
+}
+
+// Remove vídeos que não estão mais em uso
+function dropUnusedVideos(tiles) {
   const live = new Set(tiles.filter((t) => t.stream).map((t) => t.key));
   for (const [k, v] of videoCache) if (!live.has(k)) {
     v.srcObject = null;
     videoCache.delete(k);
   }
 }
+
+// ---------- tela cheia de um vídeo ----------
+let skipPop = false;
+
+function enterFullTile(key) {
+  S.fullTile = key;
+  renderVoiceView();
+  // "Voltar" do celular minimiza em vez de sair da chamada
+  history.pushState({ vvFull: true }, '');
+  // Esconde as barras do navegador (Android/desktop; no iPhone fica só a sobreposição)
+  const root = document.documentElement;
+  if (root.requestFullscreen && !document.fullscreenElement) {
+    root.requestFullscreen({ navigationUI: 'hide' })
+      .then(() => {
+        // Gira para o formato do vídeo, como no YouTube (só funciona em tela cheia no Android)
+        const v = videoCache.get(key);
+        if (v?.videoWidth && screen.orientation?.lock) {
+          screen.orientation.lock(v.videoWidth >= v.videoHeight ? 'landscape' : 'portrait').catch(() => {});
+        }
+      })
+      .catch(() => {});
+  }
+}
+
+function exitFullTile(rerender = true, fromHistory = false) {
+  if (!S.fullTile) return;
+  S.fullTile = null;
+  $('#vv-full')?.remove();
+  try {
+    screen.orientation?.unlock?.();
+  } catch {}
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  if (!fromHistory && history.state?.vvFull) {
+    skipPop = true;
+    history.back();
+  }
+  if (rerender && S.view === 'voice') renderVoiceView();
+}
+
+function renderFullTile(t) {
+  let ov = $('#vv-full');
+  if (!ov) {
+    ov = h(`<div id="vv-full">
+      <div class="vf-name"></div>
+      <button class="vf-vol" title="Volume da transmissão">${icons.speaker}</button>
+      <button class="vf-exit" title="Sair da tela cheia">${icons.shrink}</button>
+    </div>`);
+    $('.vf-exit', ov).addEventListener('click', (e) => {
+      e.stopPropagation();
+      exitFullTile();
+    });
+    $('.vf-vol', ov).addEventListener('click', (e) => {
+      e.stopPropagation();
+      clearTimeout(ov._hideTimer);
+      const cur = ov._tile;
+      if (cur) userMenu(e, cur.u, { screen: true });
+    });
+    // Toque no vídeo mostra/esconde o botão, como num player
+    ov.addEventListener('click', () => {
+      ov.classList.toggle('hide-ui');
+      clearTimeout(ov._hideTimer);
+      if (!ov.classList.contains('hide-ui')) ov._hideTimer = setTimeout(() => ov.classList.add('hide-ui'), 3000);
+    });
+    ov._hideTimer = setTimeout(() => ov.classList.add('hide-ui'), 3000);
+    document.body.append(ov);
+  }
+  $('.vf-name', ov).textContent = t.label;
+  ov._tile = t;
+  // Volume só faz sentido para a tela de outra pessoa
+  $('.vf-vol', ov).hidden = !(t.screen && t.m.socketId !== socket.id);
+  const v = videoFor(t.key, t.stream, { mirror: t.mirror });
+  if (v.parentElement !== ov) ov.prepend(v);
+}
+
+document.addEventListener('fullscreenchange', () => {
+  // Saiu da tela cheia pelo sistema (gesto, Esc): minimiza também
+  if (!document.fullscreenElement && S.fullTile) exitFullTile();
+});
 
 window.addEventListener('resize', () => S.view === 'voice' && renderVoiceView());
 
@@ -903,6 +1032,7 @@ function renderView() {
   $('#member-list').hidden = voiceMode;
   renderHeader();
   if (voiceMode) renderVoiceView();
+  else exitFullTile(false);
 }
 
 // ======================================================================
@@ -1613,6 +1743,15 @@ function setMembersDrawer(open) {
 function setupMobile() {
   if (isMobile()) $('#app').classList.add('nav-open');
   window.addEventListener('popstate', () => {
+    if (skipPop) {
+      skipPop = false;
+      return;
+    }
+    // Botão/gesto "voltar" com um vídeo em tela cheia: só minimiza
+    if (S.fullTile) {
+      exitFullTile(true, true);
+      return;
+    }
     if (!isMobile()) return;
     if (document.body.classList.contains('members-open')) {
       setMembersDrawer(false);

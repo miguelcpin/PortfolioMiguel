@@ -104,6 +104,21 @@ Com o servidor rodando no seu PC: `cloudflared tunnel --url http://localhost:300
 ### 2. TURN (recomendado para quem estiver no 4G ou em rede de faculdade/empresa)
 A voz é P2P. Na maioria das redes domésticas ela conecta direto usando STUN, que já vem configurado. Em NAT mais restritivo (4G, CGNAT, empresa) é preciso um servidor **TURN** para retransmitir. Opções grátis:
 
+- **TURN da Cloudflare** (mais fácil, 1.000 GB/mês grátis, funciona com o servidor em casa): no painel da Cloudflare, vá em **Realtime → TURN Server → Create** e coloque no `server/.env`:
+  ```
+  CF_TURN_KEY_ID=<Turn Token ID>
+  CF_TURN_API_TOKEN=<API Token>
+  ```
+  O servidor gera credenciais temporárias (24 h) a cada entrada na voz; a chave nunca vai para o app.
+
+  **Trava de gastos** (recomendado, já que a Cloudflare exige cartão e cobra US$ 0,05/GB acima de 1.000 GB/mês): crie um token em **My Profile → API Tokens** com a permissão **Account → Account Analytics → Read** e adicione:
+  ```
+  CF_ACCOUNT_ID=<id da conta, aparece na URL do painel>
+  CF_ANALYTICS_TOKEN=<token de leitura>
+  TURN_MONTHLY_LIMIT_GB=800
+  ```
+  A cada 15 min o servidor lê o consumo do mês e, ao passar do limite, para de entregar TURN (volta sozinho no mês seguinte). Se não conseguir ler o consumo por 6 h, também desliga por segurança. Credenciais já entregues ainda podem valer até 24 h, por isso o limite fica abaixo de 1.000 GB. O consumo aparece para o admin em **Configurações do servidor → Visão geral**.
+
 - **Na mesma VM da Oracle** (melhor):
   ```bash
   sudo apt install -y coturn
@@ -180,6 +195,6 @@ cd mobile && npm install && npm run sync && npm run open # app Android no Androi
 node tools/make-icons.js                                 # regenera ícones
 ```
 
-Configurações do servidor (`server/.env`): `PORT`, `INVITE_CODE`, `SERVER_NAME`, `MAX_USERS`, `MAX_UPLOAD_MB`, `DATA_DIR`, `TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL`.
+Configurações do servidor (`server/.env`): `PORT`, `INVITE_CODE`, `SERVER_NAME`, `MAX_USERS`, `MAX_UPLOAD_MB`, `DATA_DIR`, `TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL`, `CF_TURN_KEY_ID`, `CF_TURN_API_TOKEN`, `CF_ACCOUNT_ID`, `CF_ANALYTICS_TOKEN`, `TURN_MONTHLY_LIMIT_GB`.
 
 Backup: copie a pasta `server/data/`.

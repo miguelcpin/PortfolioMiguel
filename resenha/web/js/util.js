@@ -65,7 +65,8 @@ export const STATUS_LABEL = { online: 'Disponível', idle: 'Ausente', dnd: 'Não
 
 // ---------- toque ----------
 export const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
-const mobileQuery = matchMedia('(max-width: 768px)');
+// Celular deitado passa de 768px de largura, mas continua sendo celular (tela baixa + toque)
+const mobileQuery = matchMedia('(max-width: 768px), (pointer: coarse) and (max-height: 540px)');
 export const isMobile = () => mobileQuery.matches;
 
 // Segurar o dedo = botão direito
