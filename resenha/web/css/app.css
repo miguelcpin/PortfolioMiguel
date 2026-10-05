@@ -487,6 +487,13 @@ input[type=range] { accent-color: var(--brand); width: 100%; }
 
 .banner-offline { background: var(--yellow); color: #000; text-align: center; font-size: 13px; font-weight: 600; padding: 4px; }
 
+/* Uso do servidor */
+.usage-row { margin: 10px 0 14px; }
+.usage-head { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; flex-wrap: wrap; }
+.usage-head b { color: var(--text-header); font-weight: 600; }
+.usage-row .meter { margin-top: 6px; }
+.member-quota { padding: 16px 8px 0; font-size: 12px; color: var(--text-muted); }
+
 /* Endereços do servidor hospedado */
 .host-addr { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .host-addr > span { flex: 0 0 190px; font-size: 14px; }

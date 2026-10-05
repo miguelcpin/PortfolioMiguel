@@ -25,6 +25,7 @@ export function openSettings(ctx, section = 'account') {
       <button class="sn-item" data-s="account">Minha conta</button>
       <button class="sn-item" data-s="voice">Voz e vídeo</button>
       <button class="sn-item" data-s="app">Notificações e app</button>
+      <button class="sn-item" data-s="usage">Uso do servidor</button>
       ${S.me.isAdmin ? `<div class="sn-sep"></div><div class="sn-title">${escapeHtml(S.serverName)}</div>
       <button class="sn-item" data-s="server">Visão geral do servidor</button>
       <button class="sn-item" data-s="members">Membros</button>` : ''}
@@ -113,7 +114,50 @@ async function renderHostPanel(body, ctx) {
   body.append(box);
 }
 
+function fmtBytes(b) {
+  if (b < 1024 ** 2) return `${(b / 1024).toFixed(0)} KB`;
+  if (b < 1024 ** 3) return `${(b / 1024 ** 2).toFixed(1)} MB`;
+  return `${(b / 1024 ** 3).toFixed(2)} GB`;
+}
+
+function meterRow(label, used, limit, text) {
+  const pct = Math.min(100, Math.round((used / limit) * 100));
+  const color = pct >= 90 ? 'var(--red)' : pct >= 70 ? 'var(--yellow)' : 'var(--green)';
+  return `<div class="usage-row">
+    <div class="usage-head"><b>${escapeHtml(label)}</b><span>${text}</span></div>
+    <div class="meter"><i style="width:${pct}%;background:${color}"></i></div>
+  </div>`;
+}
+
 const SECTIONS = {
+  usage(body, ctx) {
+    body.innerHTML = '<h2>Uso do servidor</h2><p class="muted">Carregando…</p>';
+    const draw = async () => {
+      const u = await ctx.emitAck('usage', {});
+      if (!body.isConnected) return;
+      if (u.error) return (body.innerHTML = `<h2>Uso do servidor</h2><p class="muted">${escapeHtml(u.error)}</p>`);
+      const vagas = u.maxUsers - u.users;
+      const h = u.hosting;
+      const days = Math.max(0, Math.ceil((h?.resetsAt - Date.now()) / 864e5));
+      body.innerHTML = `<h2>Uso do servidor</h2>
+        <p class="muted" style="font-size:14px">Todo mundo vê esta página. Atualiza sozinha a cada 30 segundos.</p>
+        <h3>Pessoas</h3>
+        ${meterRow('Vagas (contas)', u.users, u.maxUsers, `${u.users} de ${u.maxUsers} usadas · <b>${vagas === 0 ? 'servidor cheio' : `restam ${vagas}`}</b>`)}
+        <p class="muted" style="font-size:14px">${u.online} online agora · ${u.inVoice} em canais de voz</p>
+        ${h ? `<h3>Hospedagem: ${escapeHtml(h.name)}</h3>
+        ${meterRow('Horas de servidor no mês (no máximo)', h.hoursUsedEstimate, h.hoursLimit, `~${h.hoursUsedEstimate} h de ${h.hoursLimit} h · <b>restam ~${Math.max(0, h.hoursLimit - h.hoursUsedEstimate)} h</b>`)}
+        <p class="muted" style="font-size:13px">Ligado o mês todo, o servidor usa ~${h.hoursIfAlwaysOn} h, ${h.hoursIfAlwaysOn <= h.hoursLimit ? 'dentro do limite ✅' : '<b>acima do limite</b> ⚠️'}. O contador zera em ${days} dia(s).</p>
+        ${meterRow('Tráfego desde a última reinicialização', u.bytesSentSinceStart, h.bandwidthLimitGb * 1024 ** 3, `${fmtBytes(u.bytesSentSinceStart)} de ${h.bandwidthLimitGb} GB/mês`)}
+        <p class="muted" style="font-size:13px">Voz, vídeo e tela vão direto entre os aparelhos e <b>não</b> gastam esse tráfego. Só contam mensagens, páginas e arquivos.</p>` : ''}
+        <h3>Arquivos</h3>
+        <p class="muted" style="font-size:14px">${fmtBytes(u.uploadsBytes)} em arquivos enviados · limite de ${u.maxUploadMb} MB por arquivo</p>
+        <p class="muted" style="font-size:13px">Servidor ligado desde ${new Date(u.startedAt).toLocaleString('pt-BR')}.</p>`;
+    };
+    draw();
+    const timer = setInterval(draw, 30000);
+    return () => clearInterval(timer);
+  },
+
   account(body, ctx) {
     const { S, socket } = ctx;
     const draw = () => {

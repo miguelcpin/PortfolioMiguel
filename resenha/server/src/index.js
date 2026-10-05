@@ -18,6 +18,9 @@ if (fs.existsSync(envFile)) {
 const PORT = Number(process.env.PORT) || 3000;
 const INVITE_CODE = process.env.INVITE_CODE || '';
 const MAX_USERS = Number(process.env.MAX_USERS) || 10;
+// Nomes que sempre são administradores (separados por vírgula), além da primeira conta criada
+const ADMIN_USERS = (process.env.ADMIN_USERS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+const isListedAdmin = (u) => ADMIN_USERS.includes(u.username.toLowerCase());
 const MAX_UPLOAD = (Number(process.env.MAX_UPLOAD_MB) || 500) * 1024 * 1024;
 const DATA_DIR = path.resolve(path.join(__dirname, '..'), process.env.DATA_DIR || './data');
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
@@ -78,6 +81,7 @@ app.post('/api/register', json, (req, res) => {
   if (db.data.users.length >= MAX_USERS) return res.status(403).json({ error: `Servidor cheio (máximo de ${MAX_USERS} pessoas).` });
   if (db.findUserByName(username)) return res.status(409).json({ error: 'Esse nome de usuário já existe.' });
   const user = db.createUser(username, password);
+  if (isListedAdmin(user)) user.isAdmin = true;
   const token = db.createSession(user.id);
   io.emit('user:new', db.publicUser(user));
   res.json({ token, user: db.publicUser(user) });
@@ -161,6 +165,64 @@ app.use('/uploads', express.static(UPLOAD_DIR, {
 app.use(express.static(WEB_DIR, { index: 'index.html' }));
 
 const server = http.createServer(app);
+
+// ---------- uso do servidor (visível para todos) ----------
+const startedAt = Date.now();
+let closedBytes = 0;
+const openSockets = new Set();
+server.on('connection', (s) => {
+  openSockets.add(s);
+  s.on('close', () => {
+    closedBytes += s.bytesWritten;
+    openSockets.delete(s);
+  });
+});
+
+function dirSize(dir) {
+  let total = 0;
+  try {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      total += e.isDirectory() ? dirSize(p) : fs.statSync(p).size;
+    }
+  } catch {}
+  return total;
+}
+
+// Plano grátis do Render: 750 h de servidor ligado e 100 GB de tráfego por mês.
+// Com o "despertador" ligado o servidor fica 24 h por dia, então as horas do mês
+// são estimadas pelo tempo corrido desde o começo do mês (ou desde FREE_HOURS_SINCE).
+function hostingUsage() {
+  if (!process.env.RENDER) return null;
+  const now = new Date();
+  const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+  const nextMonth = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+  const since = Math.max(monthStart, Date.parse(process.env.FREE_HOURS_SINCE || '') || 0);
+  return {
+    name: 'Render (plano grátis)',
+    hoursUsedEstimate: Math.round((now - since) / 36e5),
+    hoursLimit: Number(process.env.FREE_HOURS_LIMIT) || 750,
+    hoursIfAlwaysOn: Math.round((nextMonth - since) / 36e5),
+    bandwidthLimitGb: Number(process.env.FREE_BANDWIDTH_GB) || 100,
+    resetsAt: nextMonth,
+  };
+}
+
+function usage() {
+  let liveBytes = 0;
+  for (const s of openSockets) liveBytes += s.bytesWritten;
+  return {
+    users: db.data.users.length,
+    maxUsers: MAX_USERS,
+    online: [...online.values()].filter((set) => set.size > 0).length,
+    inVoice: [...voice.values()].reduce((n, m) => n + m.size, 0),
+    uploadsBytes: dirSize(UPLOAD_DIR),
+    maxUploadMb: MAX_UPLOAD / 1024 / 1024,
+    startedAt,
+    bytesSentSinceStart: closedBytes + liveBytes,
+    hosting: hostingUsage(),
+  };
+}
 const io = new Server(server, {
   cors: { origin: '*' },
   maxHttpBufferSize: 1e6,
@@ -238,6 +300,10 @@ io.on('connection', (socket) => {
   const userId = socket.data.userId;
   const me = () => db.getUser(userId);
   if (!me()) return socket.disconnect();
+  if (isListedAdmin(me()) && !me().isAdmin) {
+    me().isAdmin = true;
+    db.save();
+  }
 
   if (!online.has(userId)) online.set(userId, new Set());
   online.get(userId).add(socket.id);
@@ -253,6 +319,7 @@ io.on('connection', (socket) => {
     lastMessageIds: db.lastMessageIds(),
     iceServers: ICE_SERVERS,
     maxUploadMb: MAX_UPLOAD / 1024 / 1024,
+    maxUsers: MAX_USERS,
   });
 
   const requireAdmin = (ack) => {
@@ -313,6 +380,8 @@ io.on('connection', (socket) => {
     db.save();
     io.emit('message:update', msg);
   });
+
+  socket.on('usage', (_ = {}, ack) => typeof ack === 'function' && ack(usage()));
 
   socket.on('typing', ({ channelId } = {}) => {
     if (db.getChannel(channelId)) socket.broadcast.emit('typing', { channelId, userId });

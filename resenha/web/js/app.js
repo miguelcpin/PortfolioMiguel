@@ -219,6 +219,7 @@ function connect() {
     S.lastMessageIds = d.lastMessageIds;
     S.iceServers = d.iceServers;
     S.maxUploadMb = d.maxUploadMb;
+    S.maxUsers = d.maxUsers;
     voice.iceServers = d.iceServers;
     S.lastRead = storage.get(`lastRead:${S.me.id}`, null);
     if (!S.lastRead) {
@@ -1521,6 +1522,14 @@ function renderMembers() {
   };
   group('Online', on, true);
   group('Offline', off, false);
+  if (S.maxUsers) {
+    const left = S.maxUsers - S.users.size;
+    const q = h(`<div class="member-quota">Vagas: ${S.users.size}/${S.maxUsers} · ${left > 0 ? `restam ${left}` : 'servidor cheio'}</div>`);
+    q.style.cursor = 'pointer';
+    q.title = 'Ver uso do servidor';
+    q.addEventListener('click', () => openSettings(ctx(), 'usage'));
+    box.append(q);
+  }
 }
 
 function showProfile(u, e) {
