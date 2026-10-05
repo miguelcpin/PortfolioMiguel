@@ -2,7 +2,7 @@
   "name": "resenha",
   "productName": "Resenha",
   "version": "1.0.0",
-  "description": "Chat de voz, vídeo e texto para você e seus amigos",
+  "description": "Chat de voz, vídeo e texto para você e seus amigos (e servidor embutido para hospedar no seu PC)",
   "main": "main.js",
   "private": true,
   "author": "Resenha",
@@ -32,9 +32,18 @@
     "files": [
       "main.js",
       "preload.js",
+      "host.js",
       "connect.html",
       "build/icon.png",
-      "package.json"
+      "package.json",
+      {
+        "from": "../server/src",
+        "to": "server/src"
+      },
+      {
+        "from": "../web",
+        "to": "web"
+      }
     ],
     "win": {
       "target": "nsis",
@@ -63,5 +72,9 @@
       "artifactName": "Resenha-${version}.${ext}"
     },
     "publish": null
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
   }
 }

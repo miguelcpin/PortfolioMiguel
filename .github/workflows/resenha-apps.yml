@@ -53,9 +53,10 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: android-actions/setup-android@v3
+      # O runner já traz o Android SDK (ANDROID_HOME); o Gradle baixa o que faltar
       - run: npm install --no-audit --no-fund
       - run: npm run sync
+      - run: echo "sdk.dir=$ANDROID_HOME" > android/local.properties
       - run: chmod +x android/gradlew && cd android && ./gradlew assembleDebug --no-daemon
       # APK "debug" já vem assinado com chave de teste: instala direto no celular
       - run: mkdir -p out && cp android/app/build/outputs/apk/debug/app-debug.apk out/Resenha.apk

@@ -18,10 +18,13 @@ if (fs.existsSync(envFile)) {
 const PORT = Number(process.env.PORT) || 3000;
 const INVITE_CODE = process.env.INVITE_CODE || '';
 const MAX_USERS = Number(process.env.MAX_USERS) || 10;
+// Nomes que sempre são administradores (separados por vírgula), além da primeira conta criada
+const ADMIN_USERS = (process.env.ADMIN_USERS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+const isListedAdmin = (u) => ADMIN_USERS.includes(u.username.toLowerCase());
 const MAX_UPLOAD = (Number(process.env.MAX_UPLOAD_MB) || 500) * 1024 * 1024;
 const DATA_DIR = path.resolve(path.join(__dirname, '..'), process.env.DATA_DIR || './data');
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
-const WEB_DIR = path.join(__dirname, '..', '..', 'web');
+const WEB_DIR = process.env.WEB_DIR || path.join(__dirname, '..', '..', 'web');
 
 if (!INVITE_CODE) {
   console.warn('[aviso] INVITE_CODE não definido: qualquer pessoa com o endereço pode criar conta (até o limite de ' + MAX_USERS + ').');
@@ -37,6 +40,13 @@ if (process.env.TURN_URLS) {
 }
 
 const db = new Db(DATA_DIR, { serverName: process.env.SERVER_NAME || 'Resenha' });
+// Chave dos tokens de login. Tem que ser a mesma entre reinícios para as contas voltarem.
+db.setSessionSecret(process.env.SESSION_SECRET || `resenha:${INVITE_CODE}:${process.env.SERVER_NAME || ''}`);
+const tokenUser = (token) =>
+  db.userFromToken(token, {
+    maxUsers: MAX_USERS,
+    uploadExists: (url) => /^\/uploads\/[a-f0-9]{32}\//.test(url) && fs.existsSync(path.join(UPLOAD_DIR, decodeURIComponent(url.slice(9)))),
+  });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 // ---------- HTTP ----------
@@ -78,6 +88,7 @@ app.post('/api/register', json, (req, res) => {
   if (db.data.users.length >= MAX_USERS) return res.status(403).json({ error: `Servidor cheio (máximo de ${MAX_USERS} pessoas).` });
   if (db.findUserByName(username)) return res.status(409).json({ error: 'Esse nome de usuário já existe.' });
   const user = db.createUser(username, password);
+  if (isListedAdmin(user)) user.isAdmin = true;
   const token = db.createSession(user.id);
   io.emit('user:new', db.publicUser(user));
   res.json({ token, user: db.publicUser(user) });
@@ -95,7 +106,7 @@ app.post('/api/login', json, (req, res) => {
 
 function authUser(req) {
   const h = req.headers.authorization || '';
-  return db.userFromToken(h.replace(/^Bearer\s+/i, ''));
+  return tokenUser(h.replace(/^Bearer\s+/i, ''));
 }
 
 app.post('/api/logout', (req, res) => {
@@ -161,6 +172,64 @@ app.use('/uploads', express.static(UPLOAD_DIR, {
 app.use(express.static(WEB_DIR, { index: 'index.html' }));
 
 const server = http.createServer(app);
+
+// ---------- uso do servidor (visível para todos) ----------
+const startedAt = Date.now();
+let closedBytes = 0;
+const openSockets = new Set();
+server.on('connection', (s) => {
+  openSockets.add(s);
+  s.on('close', () => {
+    closedBytes += s.bytesWritten;
+    openSockets.delete(s);
+  });
+});
+
+function dirSize(dir) {
+  let total = 0;
+  try {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      total += e.isDirectory() ? dirSize(p) : fs.statSync(p).size;
+    }
+  } catch {}
+  return total;
+}
+
+// Plano grátis do Render: 750 h de servidor ligado e 100 GB de tráfego por mês.
+// Com o "despertador" ligado o servidor fica 24 h por dia, então as horas do mês
+// são estimadas pelo tempo corrido desde o começo do mês (ou desde FREE_HOURS_SINCE).
+function hostingUsage() {
+  if (!process.env.RENDER) return null;
+  const now = new Date();
+  const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+  const nextMonth = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+  const since = Math.max(monthStart, Date.parse(process.env.FREE_HOURS_SINCE || '') || 0);
+  return {
+    name: 'Render (plano grátis)',
+    hoursUsedEstimate: Math.round((now - since) / 36e5),
+    hoursLimit: Number(process.env.FREE_HOURS_LIMIT) || 750,
+    hoursIfAlwaysOn: Math.round((nextMonth - since) / 36e5),
+    bandwidthLimitGb: Number(process.env.FREE_BANDWIDTH_GB) || 100,
+    resetsAt: nextMonth,
+  };
+}
+
+function usage() {
+  let liveBytes = 0;
+  for (const s of openSockets) liveBytes += s.bytesWritten;
+  return {
+    users: db.data.users.length,
+    maxUsers: MAX_USERS,
+    online: [...online.values()].filter((set) => set.size > 0).length,
+    inVoice: [...voice.values()].reduce((n, m) => n + m.size, 0),
+    uploadsBytes: dirSize(UPLOAD_DIR),
+    maxUploadMb: MAX_UPLOAD / 1024 / 1024,
+    startedAt,
+    bytesSentSinceStart: closedBytes + liveBytes,
+    hosting: hostingUsage(),
+  };
+}
 const io = new Server(server, {
   cors: { origin: '*' },
   maxHttpBufferSize: 1e6,
@@ -228,7 +297,7 @@ function sanitizeAttachments(list) {
 }
 
 io.use((socket, next) => {
-  const user = db.userFromToken(socket.handshake.auth?.token);
+  const user = tokenUser(socket.handshake.auth?.token);
   if (!user) return next(new Error('unauthorized'));
   socket.data.userId = user.id;
   next();
@@ -238,6 +307,10 @@ io.on('connection', (socket) => {
   const userId = socket.data.userId;
   const me = () => db.getUser(userId);
   if (!me()) return socket.disconnect();
+  if (isListedAdmin(me()) && !me().isAdmin) {
+    me().isAdmin = true;
+    db.save();
+  }
 
   if (!online.has(userId)) online.set(userId, new Set());
   online.get(userId).add(socket.id);
@@ -253,6 +326,7 @@ io.on('connection', (socket) => {
     lastMessageIds: db.lastMessageIds(),
     iceServers: ICE_SERVERS,
     maxUploadMb: MAX_UPLOAD / 1024 / 1024,
+    maxUsers: MAX_USERS,
   });
 
   const requireAdmin = (ack) => {
@@ -314,6 +388,8 @@ io.on('connection', (socket) => {
     io.emit('message:update', msg);
   });
 
+  socket.on('usage', (_ = {}, ack) => typeof ack === 'function' && ack(usage()));
+
   socket.on('typing', ({ channelId } = {}) => {
     if (db.getChannel(channelId)) socket.broadcast.emit('typing', { channelId, userId });
   });
@@ -327,6 +403,7 @@ io.on('connection', (socket) => {
     if (typeof patch.customStatus === 'string') u.customStatus = patch.customStatus.slice(0, 128);
     db.save();
     io.emit('user:update', presenceOf(u));
+    socket.emit('session', { token: db.createSession(u.id) });
     ack?.({ ok: true });
   });
 
@@ -338,7 +415,8 @@ io.on('connection', (socket) => {
     u.salt = salt;
     u.passHash = hash;
     db.save();
-    ack?.({ ok: true });
+    // Token novo para este aparelho; os antigos (com a senha velha) deixam de valer
+    ack?.({ ok: true, token: db.createSession(u.id) });
   });
 
   // ----- administração -----
@@ -392,6 +470,7 @@ io.on('connection', (socket) => {
     const target = db.getUser(id);
     if (!target || target.id === userId) return ack?.({ error: 'Não permitido.' });
     db.data.users = db.data.users.filter((u) => u.id !== id);
+    (db.data.revoked ||= []).push(id);
     for (const [token, s] of Object.entries(db.data.sessions)) if (s.userId === id) delete db.data.sessions[token];
     db.save();
     for (const s of io.sockets.sockets.values()) {
@@ -454,10 +533,27 @@ function shutdown() {
   db.flush();
   process.exit(0);
 }
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+
+// Rodando dentro do app desktop ("hospedar neste PC"): quem cuida de encerrar é o app
+const embedded = !!process.env.RESENHA_EMBEDDED;
+if (!embedded) {
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
 
 server.listen(PORT, () => {
   console.log(`Resenha rodando em http://localhost:${PORT}`);
   console.log(`Dados em ${DATA_DIR}`);
 });
+
+module.exports = {
+  server,
+  port: PORT,
+  flush: () => db.flush(),
+  close: () =>
+    new Promise((resolve) => {
+      db.flush();
+      io.close();
+      server.close(() => resolve());
+    }),
+};

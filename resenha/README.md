@@ -61,6 +61,9 @@ Onde o Discord continua melhor (seria desonesto dizer o contrário):
 
 O servidor precisa ficar ligado enquanto vocês usam. Escolha **uma** opção:
 
+#### Opção 0 (a mais fácil): o próprio app hospeda
+Instale o app do Resenha no PC que vai ser o servidor (`Resenha-Setup.exe` no Windows) e, na primeira tela, clique em **Hospedar um servidor neste PC**. Escolha o nome e o código de convite e pronto. O app mostra os endereços para mandar aos amigos (Wi-Fi e Tailscale) e pode ligar sozinho quando o PC iniciar. Não precisa instalar Node.js nem usar terminal. O servidor fica no ar enquanto o app estiver aberto: fechar a janela só esconde o app perto do relógio. Os dados ficam na pasta do app (`%APPDATA%\Resenha\servidor-dados`). Para amigos fora da sua casa, use o Tailscale (Opção B).
+
 #### Opção A (recomendada): VM grátis para sempre na Oracle Cloud
 A Oracle dá de graça, sem prazo, uma VM ARM com 4 núcleos e 24 GB de RAM ("Always Free"). Fica ligada 24h.
 
@@ -88,6 +91,14 @@ A Oracle dá de graça, sem prazo, uma VM ARM com 4 núcleos e 24 GB de RAM ("Al
 
 #### Opção B (mais fácil): servidor no seu PC + Tailscale
 Bom se o seu PC fica ligado quando vocês jogam.
+
+**Windows em um comando:** abra o PowerShell e cole
+```powershell
+irm https://raw.githubusercontent.com/miguelcpin/PortfolioMiguel/main/resenha/tools/instalar-windows.ps1 | iex
+```
+Ele instala o Node.js se faltar, baixa o Resenha para `%USERPROFILE%\Resenha`, pergunta o código de convite, cria o atalho **Ligar Resenha** na Área de Trabalho, mostra os endereços (Wi-Fi e Tailscale) e liga o servidor. Os dados ficam em `%USERPROFILE%\Resenha\dados`. Rodar o comando de novo atualiza o app sem perder nada.
+
+Manualmente:
 
 1. Instale o Node.js 18+ (<https://nodejs.org>).
 2. Na pasta `resenha/server`: `npm install`, copie `.env.example` para `.env`, defina `INVITE_CODE` e rode `npm start`.

@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, Menu, Tray
 const path = require('path');
 const fs = require('fs');
 const pkg = require('./package.json');
+const host = require('./host');
 
 const CONFIG_FILE = path.join(app.getPath('userData'), 'config.json');
 const ICON = path.join(__dirname, 'build', 'icon.png');
@@ -13,6 +14,7 @@ let win = null;
 let tray = null;
 let quitting = false;
 let pendingSource = null; // fonte escolhida no seletor de tela
+const startHidden = process.argv.includes('--hidden'); // aberto junto com o Windows
 
 function readConfig() {
   try {
@@ -86,7 +88,7 @@ function createWindow() {
   });
   win.webContents.session.setSpellCheckerLanguages(['pt-BR', 'en-US']);
 
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => !startHidden && win.show());
 
   // Links externos abrem no navegador
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -124,7 +126,49 @@ function createWindow() {
     }
   });
 
+  bootApp();
+}
+
+// Se este PC hospeda o servidor, liga ele antes de abrir a interface
+async function bootApp() {
+  const cfg = host.readHost();
+  if (cfg.enabled) {
+    try {
+      await host.start(cfg);
+    } catch (e) {
+      updateTray();
+      return win.loadFile(path.join(__dirname, 'connect.html'), { query: { error: e.message, host: '1', ...(e.code === 'EADDRINUSE' ? { busy: String(cfg.port) } : {}) } });
+    }
+    updateTray();
+  }
   loadApp();
+}
+
+function updateTray() {
+  if (!tray) return;
+  const i = host.info();
+  tray.setToolTip(i.running ? `Resenha: servidor ligado (${i.addresses.map((a) => a.url).join(', ') || 'localhost:' + i.port})` : 'Resenha');
+  const items = [{ label: 'Abrir Resenha', click: showWindow }, { type: 'separator' }];
+  if (i.running) {
+    items.push({ label: `Servidor ligado (porta ${i.port})`, enabled: false });
+    items.push({
+      label: 'Desligar servidor',
+      click: async () => {
+        await host.stop();
+        host.writeHost({ ...host.readHost(), enabled: false });
+        host.setAutostart(false);
+        writeConfig({ ...readConfig(), serverUrl: '' });
+        updateTray();
+        win.loadFile(path.join(__dirname, 'connect.html'));
+      },
+    });
+    items.push({ type: 'separator' });
+  } else if (host.readHost().inviteCode) {
+    items.push({ label: 'Ligar servidor neste PC', click: () => { showWindow(); win.loadFile(path.join(__dirname, 'connect.html'), { query: { host: '1' } }); } });
+    items.push({ type: 'separator' });
+  }
+  items.push({ label: 'Sair do Resenha', click: () => { quitting = true; app.quit(); } });
+  tray.setContextMenu(Menu.buildFromTemplate(items));
 }
 
 function createTray() {
@@ -132,14 +176,8 @@ function createTray() {
     const img = nativeImage.createFromPath(ICON).resize({ width: isMac ? 18 : 16, height: isMac ? 18 : 16 });
     tray = new Tray(img);
     tray.setToolTip('Resenha');
-    tray.setContextMenu(
-      Menu.buildFromTemplate([
-        { label: 'Abrir Resenha', click: showWindow },
-        { type: 'separator' },
-        { label: 'Sair do Resenha', click: () => { quitting = true; app.quit(); } },
-      ]),
-    );
     tray.on('click', showWindow);
+    updateTray();
   } catch (e) {
     tray = null; // sem bandeja (alguns Linux): fechar a janela fecha o app
   }
@@ -212,6 +250,51 @@ function setupIpc() {
     win.loadFile(path.join(__dirname, 'connect.html'), { query: { server: serverUrl(), change: '1' } });
   }));
 
+  // ----- hospedar o servidor neste PC -----
+  ipcMain.handle('host-info', guard(() => ({ ...host.info(), suggestedInvite: host.randomInvite() })));
+
+  ipcMain.handle('host-start', guard(async (_e, opts = {}) => {
+    const port = Math.min(65535, Math.max(1024, Number(opts.port) || 3000));
+    const cfg = {
+      enabled: true,
+      port,
+      inviteCode: String(opts.inviteCode || '').trim() || host.randomInvite(),
+      serverName: String(opts.serverName || '').trim().slice(0, 50) || 'Resenha',
+      autostart: opts.autostart !== false,
+    };
+    try {
+      await host.start(cfg);
+    } catch (e) {
+      if (e.code !== 'EADDRINUSE') return { error: e.message };
+      // Porta ocupada: descobre quem é para oferecer as opções
+      const other = await host.probe(port);
+      return { error: e.message, busy: true, port, other, freePort: await host.findFreePort(port) };
+    }
+    host.writeHost(cfg);
+    host.setAutostart(cfg.autostart);
+    writeConfig({ ...readConfig(), serverUrl: `http://localhost:${port}` });
+    updateTray();
+    loadApp();
+    return { ok: true };
+  }));
+
+  ipcMain.handle('host-stop', guard(async () => {
+    await host.stop();
+    host.writeHost({ ...host.readHost(), enabled: false });
+    host.setAutostart(false);
+    writeConfig({ ...readConfig(), serverUrl: '' });
+    updateTray();
+    win.loadFile(path.join(__dirname, 'connect.html'));
+  }));
+
+  // Desliga o outro programa/servidor que está ocupando a porta
+  ipcMain.handle('host-kill-port', guard((_e, port) => host.killPort(Math.min(65535, Math.max(1024, Number(port) || 3000)))));
+
+  ipcMain.handle('host-autostart', guard((_e, on) => {
+    host.writeHost({ ...host.readHost(), autostart: !!on });
+    host.setAutostart(!!on);
+  }));
+
   ipcMain.on('focus', (event) => trusted(event.senderFrame) && showWindow());
 
   ipcMain.on('badge', (event, count) => {
@@ -246,7 +329,10 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on('activate', showWindow);
-  app.on('before-quit', () => (quitting = true));
+  app.on('before-quit', () => {
+    quitting = true;
+    host.flush(); // salva mensagens pendentes do servidor hospedado
+  });
   app.on('window-all-closed', () => {
     if (!isMac) app.quit();
   });

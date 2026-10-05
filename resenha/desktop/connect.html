@@ -22,6 +22,24 @@
     button:disabled { opacity: .6; cursor: default; }
     .err { color: #fa777c; font-size: 14px; margin-top: 12px; text-align: left; }
     .hint { font-size: 13px; text-align: left; }
+    main { overflow-y: auto; padding: 24px 0; }
+    .or { display: flex; align-items: center; gap: 10px; margin: 24px 0 0; color: #949ba4; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .or::before, .or::after { content: ''; flex: 1; height: 1px; background: #3f4147; }
+    button.secondary { background: #4e5058; }
+    button.secondary:hover { background: #6d6f78; }
+    button.green { background: #23a55a; }
+    button.green:hover { background: #1a8b4c; }
+    .check { display: flex; align-items: center; gap: 10px; margin-top: 16px; font-size: 14px; color: #dbdee1; text-transform: none; font-weight: 400; cursor: pointer; }
+    .check input { width: 18px; height: 18px; accent-color: #5865f2; }
+    .row { display: flex; gap: 12px; }
+    .row > div { flex: 1; }
+    .row > div.small { flex: 0 0 110px; }
+    a { color: #00a8fc; cursor: pointer; }
+    .busy { margin-top: 16px; padding: 14px; border-radius: 6px; background: #2b2d31; border-left: 4px solid #f0b232; font-size: 14px; }
+    .busy b { color: #f2f3f5; }
+    .busy button { margin-top: 10px; height: 38px; font-size: 14px; }
+    button.danger { background: #da373c; }
+    button.danger:hover { background: #a12828; }
   </style>
 </head>
 <body>
@@ -36,6 +54,31 @@
       <div class="err" id="err" hidden></div>
       <button id="go">Conectar</button>
       <p class="hint">Dica: o endereço é aquele que aparece quando o dono roda o servidor (ex.: link do Cloudflare Tunnel, IP do Tailscale ou domínio próprio).</p>
+      <div class="or">ou</div>
+      <button type="button" class="secondary" id="show-host">🖥️ Hospedar um servidor neste PC</button>
+    </form>
+
+    <form id="h" hidden>
+      <img src="build/icon.png" alt="">
+      <h1>Hospedar neste PC</h1>
+      <p>Este computador vira o servidor. Seus amigos se conectam nele.</p>
+      <label for="h-name">Nome do servidor</label>
+      <input id="h-name" value="Resenha" maxlength="50">
+      <div class="row">
+        <div>
+          <label for="h-invite">Código de convite</label>
+          <input id="h-invite" maxlength="40" spellcheck="false">
+        </div>
+        <div class="small">
+          <label for="h-port">Porta</label>
+          <input id="h-port" type="number" value="3000" min="1024" max="65535">
+        </div>
+      </div>
+      <label class="check"><input type="checkbox" id="h-auto" checked> Ligar o servidor sozinho quando o PC iniciar</label>
+      <div class="err" id="h-err" hidden></div>
+      <div class="busy" id="busy" hidden></div>
+      <button class="green" id="h-go">Criar e ligar o servidor</button>
+      <p class="hint">O servidor fica ligado enquanto o app estiver aberto (fechar a janela só esconde perto do relógio). Se o Windows perguntar sobre o Firewall, marque <b>Redes privadas</b> e clique em <b>Permitir</b>. <a id="back">← Voltar</a></p>
     </form>
   </main>
   <script>
@@ -46,6 +89,68 @@
     const go = document.getElementById('go');
     url.value = q.get('server') || '';
     if (q.get('error')) { err.textContent = q.get('error'); err.hidden = false; }
+
+    // ----- hospedar -----
+    const $ = (id) => document.getElementById(id);
+    async function showHost(error) {
+      $('f').hidden = true;
+      $('h').hidden = false;
+      const info = await window.desktop.hostInfo();
+      $('h-name').value = info.serverName || 'Resenha';
+      $('h-invite').value = info.inviteCode || info.suggestedInvite;
+      $('h-port').value = info.port || 3000;
+      $('h-auto').checked = info.enabled ? info.autostart : true;
+      if (error) { $('h-err').textContent = error; $('h-err').hidden = false; }
+    }
+    $('show-host').addEventListener('click', () => showHost());
+    $('back').addEventListener('click', () => { $('h').hidden = true; $('f').hidden = false; });
+
+    const opts = () => ({
+      serverName: $('h-name').value,
+      inviteCode: $('h-invite').value,
+      port: $('h-port').value,
+      autostart: $('h-auto').checked,
+    });
+    function resetGo() { $('h-go').disabled = false; $('h-go').textContent = 'Criar e ligar o servidor'; }
+
+    async function tryStart() {
+      $('h-go').disabled = true; $('h-go').textContent = 'Ligando…'; $('h-err').hidden = true; $('busy').hidden = true;
+      const res = await window.desktop.hostStart(opts());
+      if (!res?.error) return; // deu certo: o app abre sozinho
+      resetGo();
+      if (res.busy) return showBusy(res);
+      $('h-err').textContent = res.error; $('h-err').hidden = false;
+    }
+
+    // Porta ocupada: oferece desligar o outro servidor, trocar de porta ou usar o que já está aberto
+    function showBusy({ port, other, freePort }) {
+      const box = $('busy');
+      const isResenha = other?.resenha;
+      box.innerHTML = isResenha
+        ? `Já existe <b>outro servidor do Resenha ligado</b> na porta ${port}${other.serverName ? ` (“${other.serverName.replace(/</g, '&lt;')}”, ${other.users} conta(s))` : ''}. Provavelmente foi ligado antes pelo PowerShell ou por outro programa.`
+        : `A porta <b>${port}</b> está sendo usada por <b>outro programa</b> deste PC.`;
+      const add = (label, cls, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = cls; b.textContent = label; b.onclick = fn; box.append(b); };
+      add(isResenha ? 'Desligar o outro servidor e ligar este' : 'Fechar esse programa e ligar este', 'danger', async () => {
+        if (!isResenha && !confirm(`Isso vai fechar o programa que está usando a porta ${port}. Continuar?`)) return;
+        box.innerHTML = 'Desligando o outro servidor…';
+        const r = await window.desktop.hostKillPort(port);
+        if (!r.ok) {
+          box.innerHTML = 'Não consegui desligar sozinho. Feche a janela preta do servidor antigo (ou reinicie o PC) e tente de novo.';
+          return;
+        }
+        tryStart();
+      });
+      if (freePort) add(`Usar a porta ${freePort} (deixa o outro ligado)`, 'secondary', () => { $('h-port').value = freePort; tryStart(); });
+      if (isResenha) add('Não hospedar: só conectar no servidor que já está aberto', 'secondary', () => window.desktop.setServer(`http://localhost:${port}`));
+      box.hidden = false;
+    }
+
+    $('h').addEventListener('submit', (e) => { e.preventDefault(); tryStart(); });
+    if (q.get('host')) {
+      err.hidden = true;
+      // Com porta ocupada (ex.: ao ligar o PC), já tenta de novo para mostrar as opções
+      showHost(q.get('busy') ? '' : q.get('error')).then(() => q.get('busy') && tryStart());
+    }
 
     document.getElementById('f').addEventListener('submit', async (e) => {
       e.preventDefault();
