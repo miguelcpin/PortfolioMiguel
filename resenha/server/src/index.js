@@ -40,6 +40,13 @@ if (process.env.TURN_URLS) {
 }
 
 const db = new Db(DATA_DIR, { serverName: process.env.SERVER_NAME || 'Resenha' });
+// Chave dos tokens de login. Tem que ser a mesma entre reinícios para as contas voltarem.
+db.setSessionSecret(process.env.SESSION_SECRET || `resenha:${INVITE_CODE}:${process.env.SERVER_NAME || ''}`);
+const tokenUser = (token) =>
+  db.userFromToken(token, {
+    maxUsers: MAX_USERS,
+    uploadExists: (url) => /^\/uploads\/[a-f0-9]{32}\//.test(url) && fs.existsSync(path.join(UPLOAD_DIR, decodeURIComponent(url.slice(9)))),
+  });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 // ---------- HTTP ----------
@@ -99,7 +106,7 @@ app.post('/api/login', json, (req, res) => {
 
 function authUser(req) {
   const h = req.headers.authorization || '';
-  return db.userFromToken(h.replace(/^Bearer\s+/i, ''));
+  return tokenUser(h.replace(/^Bearer\s+/i, ''));
 }
 
 app.post('/api/logout', (req, res) => {
@@ -290,7 +297,7 @@ function sanitizeAttachments(list) {
 }
 
 io.use((socket, next) => {
-  const user = db.userFromToken(socket.handshake.auth?.token);
+  const user = tokenUser(socket.handshake.auth?.token);
   if (!user) return next(new Error('unauthorized'));
   socket.data.userId = user.id;
   next();
@@ -396,6 +403,7 @@ io.on('connection', (socket) => {
     if (typeof patch.customStatus === 'string') u.customStatus = patch.customStatus.slice(0, 128);
     db.save();
     io.emit('user:update', presenceOf(u));
+    socket.emit('session', { token: db.createSession(u.id) });
     ack?.({ ok: true });
   });
 
@@ -407,7 +415,8 @@ io.on('connection', (socket) => {
     u.salt = salt;
     u.passHash = hash;
     db.save();
-    ack?.({ ok: true });
+    // Token novo para este aparelho; os antigos (com a senha velha) deixam de valer
+    ack?.({ ok: true, token: db.createSession(u.id) });
   });
 
   // ----- administração -----
@@ -461,6 +470,7 @@ io.on('connection', (socket) => {
     const target = db.getUser(id);
     if (!target || target.id === userId) return ack?.({ error: 'Não permitido.' });
     db.data.users = db.data.users.filter((u) => u.id !== id);
+    (db.data.revoked ||= []).push(id);
     for (const [token, s] of Object.entries(db.data.sessions)) if (s.userId === id) delete db.data.sessions[token];
     db.save();
     for (const s of io.sockets.sockets.values()) {

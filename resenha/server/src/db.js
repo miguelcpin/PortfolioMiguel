@@ -104,21 +104,78 @@ class Db {
     };
   }
 
+  // ---------- sessões ----------
+  // O token de login leva, criptografados, os dados da própria conta. Se o servidor
+  // perder os dados (ex.: reinício no plano grátis do Render), a conta é recriada
+  // a partir do token na próxima vez que a pessoa abrir o app: ela continua logada.
+  setSessionSecret(secret) {
+    this.sessionKey = crypto.scryptSync(String(secret), 'resenha-session-v1', 32);
+  }
+
   createSession(userId) {
-    const token = crypto.randomBytes(32).toString('hex');
-    this.data.sessions[token] = { userId, createdAt: Date.now() };
-    this.save();
-    return token;
+    const u = this.getUser(userId);
+    const payload = JSON.stringify({
+      v: 1,
+      id: u.id,
+      username: u.username,
+      salt: u.salt,
+      passHash: u.passHash,
+      color: u.color,
+      avatar: u.avatar,
+      customStatus: u.customStatus,
+      isAdmin: u.isAdmin,
+      createdAt: u.createdAt,
+    });
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', this.sessionKey, iv);
+    const enc = Buffer.concat([cipher.update(payload, 'utf8'), cipher.final()]);
+    return 'r1.' + Buffer.concat([iv, cipher.getAuthTag(), enc]).toString('base64url');
   }
 
-  userFromToken(token) {
-    const s = token && this.data.sessions[token];
-    return s ? this.getUser(s.userId) : null;
+  readToken(token) {
+    if (typeof token !== 'string' || !token.startsWith('r1.') || token.length > 4000) return null;
+    try {
+      const raw = Buffer.from(token.slice(3), 'base64url');
+      const decipher = crypto.createDecipheriv('aes-256-gcm', this.sessionKey, raw.subarray(0, 12));
+      decipher.setAuthTag(raw.subarray(12, 28));
+      const json = Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString('utf8');
+      return JSON.parse(json);
+    } catch {
+      return null;
+    }
   }
 
-  deleteSession(token) {
-    delete this.data.sessions[token];
+  // maxUsers: limite de contas; uploadExists(url): se o arquivo do avatar ainda existe
+  userFromToken(token, { maxUsers = Infinity, uploadExists = () => false } = {}) {
+    const t = this.readToken(token);
+    if (!t || (this.data.revoked || []).includes(t.id)) return null;
+    const existing = this.getUser(t.id);
+    if (existing) {
+      // Senha trocada depois deste token: ele não vale mais
+      return existing.passHash === t.passHash ? existing : null;
+    }
+    // Conta sumiu (servidor reiniciou): recria, se o nome estiver livre e houver vaga
+    if (this.findUserByName(t.username) || this.data.users.length >= maxUsers) return null;
+    const user = {
+      id: t.id,
+      username: t.username,
+      salt: t.salt,
+      passHash: t.passHash,
+      color: t.color,
+      avatar: t.avatar && uploadExists(t.avatar) ? t.avatar : null,
+      status: 'online',
+      customStatus: t.customStatus || '',
+      isAdmin: !!t.isAdmin,
+      createdAt: t.createdAt || Date.now(),
+      restoredAt: Date.now(),
+    };
+    this.data.users.push(user);
     this.save();
+    return user;
+  }
+
+  deleteSession() {
+    // Tokens não ficam guardados no servidor: sair = o app apaga o token do aparelho
   }
 
   // ---------- canais ----------

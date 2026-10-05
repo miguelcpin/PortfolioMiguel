@@ -201,6 +201,11 @@ const SECTIONS = {
         const res = await ctx.emitAck('user:password', { current: $('#pw-cur', body).value, next: $('#pw-new', body).value });
         if (res.error) toast(res.error, 'error');
         else {
+          if (res.token) {
+            S.token = res.token;
+            try { localStorage.setItem('token', JSON.stringify(res.token)); } catch {}
+            ctx.socket.auth.token = res.token;
+          }
           toast('Senha alterada.', 'success');
           $('#pw-cur', body).value = $('#pw-new', body).value = '';
         }

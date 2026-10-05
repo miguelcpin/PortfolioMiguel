@@ -248,6 +248,14 @@ function connect() {
     if (S.prefs.notifications && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission();
   });
 
+  // O servidor renova o token quando o perfil muda (o token guarda a conta)
+  socket.on('session', ({ token }) => {
+    if (!token) return;
+    S.token = token;
+    storage.set('token', token);
+    socket.auth.token = token;
+  });
+
   socket.on('kicked', () => {
     toast('Você foi removido do servidor.', 'error');
     logout();
